@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+WS_ROOT="/home/nvidia/go2_nav_ws"
+source /opt/ros/noetic/setup.bash
+if [[ ! -f "${WS_ROOT}/devel/setup.bash" ]]; then
+  echo "Workspace is not built. Run: ${WS_ROOT}/build_workspace.sh" >&2
+  exit 2
+fi
+source "${WS_ROOT}/devel/setup.bash"
+set -u
+
+command_name="${1:-help}"
+map_name="${2:-site01}"
+
+require_map_name() {
+  if [[ ! "${map_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    echo "Invalid map name '${map_name}'. Use letters, numbers, '_' or '-', and start with a letter or number." >&2
+    exit 2
+  fi
+}
+
+require_exclusive_stack() {
+  local active_nodes
+  local conflicting_nodes
+  local conflicting_launches
+  conflicting_launches="$(pgrep -af '/opt/ros/noetic/bin/[r]oslaunch go2_bringup (mapping|navigation)\.launch' || true)"
+  if [[ -n "${conflicting_launches}" ]]; then
+    echo "Refusing to start a second GO2 stack. Existing launch process:" >&2
+    printf '%s\n' "${conflicting_launches}" >&2
+    echo "A process marked T/Tl was suspended with Ctrl+Z. Resume it with fg and stop it with Ctrl+C before retrying." >&2
+    exit 3
+  fi
+  active_nodes="$(rosnode list 2>/dev/null || true)"
+  conflicting_nodes="$(printf '%s\n' "${active_nodes}" | grep -E '^/(laserMapping|livox_lidar_publisher2|go2_tf_manager|go2_pose_adapter|go2_localization_guard|move_base|go2_sdk_bridge_real)$' || true)"
+  if [[ -n "${conflicting_nodes}" ]]; then
+    echo "Refusing to start a second GO2 stack. Conflicting ROS nodes are already running:" >&2
+    printf '%s\n' "${conflicting_nodes}" >&2
+    echo "Stop the existing mapping/navigation launch with Ctrl+C, verify that these nodes disappear, then retry." >&2
+    exit 3
+  fi
+}
+
+case "${command_name}" in
+  mapping)
+    require_map_name
+    require_exclusive_stack
+    mkdir -p "${WS_ROOT}/maps/${map_name}"
+    exec roslaunch go2_bringup mapping.launch map_name:="${map_name}" rviz:="${RVIZ:-false}"
+    ;;
+  save-map)
+    rosservice call /go2_map_builder/save_map
+    ;;
+  export-map)
+    require_map_name
+    exec roslaunch go2_mapping export_occupancy.launch map_name:="${map_name}"
+    ;;
+  navigation)
+    require_map_name
+    require_exclusive_stack
+    use_real=false
+    if [[ "${3:-}" == "--real" ]]; then
+      use_real=true
+    fi
+    exec roslaunch go2_bringup navigation.launch map_name:="${map_name}" \
+      use_real_sdk:="${use_real}" rviz:="${RVIZ:-false}"
+    ;;
+  enable)
+    echo "Clearing old navigation goals and costmaps before enabling control..."
+    rosservice call /go2_navigation_supervisor/reset
+    enable_response="$(rosservice call /go2_sdk_bridge_real/enable "data: true")"
+    printf '%s\n' "${enable_response}"
+    if ! grep -qE '^success: ([Tt]rue|true)$' <<<"${enable_response}"; then
+      echo "Control enable was rejected by go2_sdk_bridge_real." >&2
+      exit 4
+    fi
+    if ! timeout 3 rostopic echo -n 1 /go2/control/enabled | \
+        grep -qE '^data: ([Tt]rue|true)$'; then
+      echo "Enable service succeeded, but /go2/control/enabled did not become true." >&2
+      exit 4
+    fi
+    echo "Control enabled. Publish a fresh 2D Nav Goal; old goals are not resumed."
+    ;;
+  disable)
+    rosservice call /go2_sdk_bridge_real/enable "data: false"
+    ;;
+  reset-navigation)
+    rosservice call /go2_navigation_supervisor/reset
+    ;;
+  status)
+    show_topic() {
+      local label="$1"
+      local topic="$2"
+      echo "=== ${label} (${topic}) ==="
+      timeout 3 rostopic echo -n 1 "${topic}" || echo "unavailable"
+    }
+    show_topic "System ready" /go2/system/ready
+    show_topic "Localization state" /localization/state
+    show_topic "Localization OK" /localization/ok
+    show_topic "Control enabled" /go2/control/enabled
+    show_topic "Navigation ready" /navigation/ready
+    show_topic "GO2 diagnostics" /go2/diagnostics
+    ;;
+  chassis-status)
+    echo "=== GO2 battery ==="
+    rostopic echo -n 1 /go2/battery_state
+    echo "=== GO2 SDK diagnostics ==="
+    rostopic echo -n 1 /go2/diagnostics
+    ;;
+  chassis-self-test)
+    test_log="/tmp/go2_chassis_self_test_latest.log"
+    rosrun go2_control go2_sdk_official_motion_test_node \
+      eth1 --execute-straight-test 2>&1 | tee "${test_log}"
+    echo "Self-test log: ${test_log}"
+    ;;
+  chassis-standing-test)
+    test_log="/tmp/go2_chassis_standing_test_latest.log"
+    rosrun go2_control go2_sdk_official_motion_test_node \
+      eth1 --execute-standing-test 2>&1 | tee "${test_log}"
+    echo "Standing test log: ${test_log}"
+    ;;
+  *)
+    cat <<'USAGE'
+Usage:
+  run_go2 mapping <map_name>
+  run_go2 save-map
+  run_go2 export-map <map_name>
+  run_go2 navigation <map_name>          # dry-run, mock SDK
+  run_go2 navigation <map_name> --real   # real SDK starts disabled
+  run_go2 enable
+  run_go2 disable
+  run_go2 reset-navigation
+  run_go2 status
+  run_go2 chassis-status
+  run_go2 chassis-self-test             # 0.3 m official SDK straight test
+  run_go2 chassis-standing-test         # already standing; direct 0.3 m test
+
+Set RVIZ=true before mapping/navigation to start RViz.
+USAGE
+    ;;
+esac

@@ -1,0 +1,13 @@
+<launch>
+  <arg name="map_name" default="site01"/>
+  <arg name="map_root" default="$(env HOME)/go2_nav_ws/maps"/>
+  <arg name="output_path" default="$(arg map_root)/$(arg map_name)/public_map.pcd"/>
+
+  <node pkg="go2_mapping" type="go2_map_builder_node" name="go2_map_builder"
+        output="screen" required="true">
+    <rosparam command="load" file="$(find go2_mapping)/config/mapper.yaml"/>
+    <param name="input_cloud" value="/cloud_registered_odom"/>
+    <param name="input_odom" value="/odom_nav"/>
+    <param name="output_path" value="$(arg output_path)"/>
+  </node>
+</launch>

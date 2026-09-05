@@ -1,0 +1,34 @@
+<launch>
+  <arg name="map_name" default="site01"/>
+  <arg name="map_root" default="$(env HOME)/go2_nav_ws/maps"/>
+  <arg name="start_lidar" default="true"/>
+  <arg name="use_real_sdk" default="false"/>
+  <arg name="network_interface" default="eth1"/>
+  <arg name="rviz" default="false"/>
+
+  <group if="$(arg start_lidar)">
+    <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch"/>
+  </group>
+  <include file="$(find go2_bringup)/launch/fast_lio.launch"/>
+  <include file="$(find go2_core)/launch/core.launch">
+    <arg name="enable_costmap_cloud" value="true"/>
+  </include>
+  <include file="$(find go2_localization)/launch/localization.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="map_root" value="$(arg map_root)"/>
+  </include>
+  <include file="$(find go2_navigation)/launch/navigation_stack.launch">
+    <arg name="map_name" value="$(arg map_name)"/>
+    <arg name="map_root" value="$(arg map_root)"/>
+  </include>
+  <include file="$(find go2_control)/launch/control.launch">
+    <arg name="use_real_sdk" value="$(arg use_real_sdk)"/>
+    <arg name="network_interface" value="$(arg network_interface)"/>
+  </include>
+
+  <node pkg="go2_bringup" type="go2_system_monitor_node"
+        name="go2_system_monitor" output="screen">
+    <param name="mode" value="navigation"/>
+  </node>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz" output="screen"/>
+</launch>

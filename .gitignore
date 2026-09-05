@@ -1,0 +1,35 @@
+# Catkin output
+/build/
+/devel/
+/install/
+/logs/
+/.catkin_tools/
+
+# ROS runtime data
+*.bag
+*.bag.active
+*.db3
+.ros/
+
+# Large runtime maps are archived outside normal Git history.
+/maps/**/public_map.pcd
+*.pcd.tmp
+
+# Editor and language caches
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local deployment artifacts
+*.tar.gz
+*.zip
+
+# Desktop recovery metadata and pre-reorganization reference packages
+/_reference/
+/OFFLINE_SNAPSHOT_README.md
+/SHA256SUMS.csv

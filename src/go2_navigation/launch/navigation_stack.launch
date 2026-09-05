@@ -1,0 +1,27 @@
+<launch>
+  <arg name="map_name" default="site01"/>
+  <arg name="map_root" default="$(env HOME)/go2_nav_ws/maps"/>
+  <arg name="map_yaml" default="$(arg map_root)/$(arg map_name)/map.yaml"/>
+
+  <node pkg="map_server" type="map_server" name="go2_map_server"
+        args="$(arg map_yaml)" output="screen" required="true">
+    <remap from="map" to="/map_2d"/>
+    <remap from="map_metadata" to="/map_2d_metadata"/>
+  </node>
+
+  <node pkg="go2_navigation" type="go2_navigation_supervisor_node"
+        name="go2_navigation_supervisor" output="screen"/>
+
+  <node pkg="move_base" type="move_base" name="move_base" output="screen">
+    <rosparam command="load" file="$(find go2_navigation)/config/move_base.yaml"/>
+    <rosparam command="load" ns="global_costmap" file="$(find go2_navigation)/config/costmap_common.yaml"/>
+    <rosparam command="load" ns="global_costmap" file="$(find go2_navigation)/config/global_costmap.yaml"/>
+    <rosparam command="load" ns="local_costmap" file="$(find go2_navigation)/config/costmap_common.yaml"/>
+    <rosparam command="load" ns="local_costmap" file="$(find go2_navigation)/config/local_costmap.yaml"/>
+    <rosparam command="load" file="$(find go2_navigation)/config/global_planner.yaml"/>
+    <rosparam command="load" file="$(find go2_navigation)/config/teb.yaml"/>
+    <remap from="odom" to="/odom_nav"/>
+    <remap from="cmd_vel" to="/cmd_vel_nav"/>
+    <remap from="/move_base_simple/goal" to="/move_base/validated_goal"/>
+  </node>
+</launch>
