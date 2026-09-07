@@ -1,6 +1,6 @@
 <launch>
   <arg name="use_real_sdk" default="false"/>
-  <arg name="network_interface" default="eth1"/>
+  <arg name="network_interface" default="go2dds"/>
 
   <node pkg="go2_control" type="go2_velocity_shaper_node"
         name="go2_velocity_shaper" output="screen" required="true">

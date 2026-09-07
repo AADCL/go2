@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-WS_ROOT="/home/nvidia/go2_nav_ws"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+WS_ROOT="$(dirname "${SCRIPT_PATH}")"
+GO2_INTERFACE="${GO2_INTERFACE:-go2dds}"
 source /opt/ros/noetic/setup.bash
 if [[ ! -f "${WS_ROOT}/devel/setup.bash" ]]; then
   echo "Workspace is not built. Run: ${WS_ROOT}/build_workspace.sh" >&2
@@ -63,7 +65,8 @@ case "${command_name}" in
       use_real=true
     fi
     exec roslaunch go2_bringup navigation.launch map_name:="${map_name}" \
-      use_real_sdk:="${use_real}" rviz:="${RVIZ:-false}"
+      use_real_sdk:="${use_real}" network_interface:="${GO2_INTERFACE}" \
+      rviz:="${RVIZ:-false}"
     ;;
   enable)
     echo "Clearing old navigation goals and costmaps before enabling control..."
@@ -110,13 +113,13 @@ case "${command_name}" in
   chassis-self-test)
     test_log="/tmp/go2_chassis_self_test_latest.log"
     rosrun go2_control go2_sdk_official_motion_test_node \
-      eth1 --execute-straight-test 2>&1 | tee "${test_log}"
+      "${GO2_INTERFACE}" --execute-straight-test 2>&1 | tee "${test_log}"
     echo "Self-test log: ${test_log}"
     ;;
   chassis-standing-test)
     test_log="/tmp/go2_chassis_standing_test_latest.log"
     rosrun go2_control go2_sdk_official_motion_test_node \
-      eth1 --execute-standing-test 2>&1 | tee "${test_log}"
+      "${GO2_INTERFACE}" --execute-standing-test 2>&1 | tee "${test_log}"
     echo "Standing test log: ${test_log}"
     ;;
   *)
@@ -136,6 +139,7 @@ Usage:
   run_go2 chassis-standing-test         # already standing; direct 0.3 m test
 
 Set RVIZ=true before mapping/navigation to start RViz.
+Set GO2_INTERFACE only if the GO2 DDS interface is not go2dds.
 USAGE
     ;;
 esac

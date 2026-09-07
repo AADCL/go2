@@ -3,10 +3,10 @@
 本文档对应端侧工作空间：
 
 ```text
-/home/nvidia/go2_nav_ws
+/home/unitree/go2_nav_ws
 ```
 
-旧工程 `/home/nvidia/go2_mid360_nav` 未被修改，可用于对照和回退。新工作空间采用一个 catkin 工作空间、六个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。
+旧工程 `/home/unitree/go2_mid360_nav` 未被修改，可用于对照和回退。新工作空间采用一个 catkin 工作空间、六个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。
 
 ## 1. 运行前安全要求
 
@@ -60,8 +60,8 @@ go2_nav_ws/
 登录端侧：
 
 ```bash
-ssh nvidia@192.168.50.100
-cd /home/nvidia/go2_nav_ws
+ssh unitree@192.168.50.111
+cd /home/unitree/go2_nav_ws
 ```
 
 首次部署或修改源码后执行：
@@ -72,14 +72,14 @@ cd /home/nvidia/go2_nav_ws
 
 脚本会自动加载 ROS Noetic、以单任务方式编译以避免 Jetson 内存压力，并执行 package/launch 静态检查。编译成功后，日常启动不要再手动运行 `source /opt/ros/noetic/setup.bash` 或 `source devel/setup.bash`；`run_go2` 会自动处理。
 
-编译脚本还会在 `/home/nvidia/.local/bin/run_go2` 建立用户级命令入口。该目录已经位于 nvidia 用户的 `PATH` 中，因此在 `~/Desktop` 或其他任意目录应直接执行：
+编译脚本还会在 `/home/unitree/.local/bin/run_go2` 建立用户级命令入口。该目录已经位于 unitree 用户的 `PATH` 中，因此在 `~/Desktop` 或其他任意目录应直接执行：
 
 ```bash
 run_go2 reset-navigation
 run_go2 status
 ```
 
-不要写成 `./run_go2`；前缀 `./` 的含义是“只在当前目录寻找这个文件”。只有当前目录正好是 `/home/nvidia/go2_nav_ws` 时，`./run_go2` 才成立。
+不要写成 `./run_go2`；前缀 `./` 的含义是“只在当前目录寻找这个文件”。只有当前目录正好是 `/home/unitree/go2_nav_ws` 时，`./run_go2` 才成立。
 
 `mapping` 和 `navigation` 启动前会检查 ROS master 中是否已有 LiDAR、FAST-LIO、TF、定位、move_base 或 real SDK bridge。发现旧工程或另一套 GO2 链仍在运行时会拒绝启动，并列出冲突节点；先回到原 launch 窗口按 `Ctrl+C`，确认冲突节点消失后再重试。该保护不会自动终止未知进程。
 
@@ -95,15 +95,15 @@ run_go2 status
 
 | 设备 | 端侧网卡 | 端侧 IP | 设备 IP |
 |---|---|---|---|
-| Livox Mid-360 | eth0 | 192.168.1.50 | 192.168.1.191 |
-| GO2 EDU | eth1 | 192.168.123.199 | GO2 默认 192.168.123.x 网段 |
+| Livox Mid-360 | eth0 | 192.168.1.50 | 192.168.1.168 |
+| GO2 EDU | go2dds（macvlan over eth1） | 192.168.123.18 | 192.168.123.161 |
 
 检查：
 
 ```bash
 ip -br addr show eth0
-ip -br addr show eth1
-ping -c 3 192.168.1.191
+ip -br addr show go2dds
+ping -c 3 192.168.1.168
 ```
 
 如果网卡名发生变化，不要直接启用真机控制；先修改 `go2_core/config/robot.yaml` 以及导航启动时传给 SDK bridge 的网卡参数。
@@ -115,7 +115,7 @@ ping -c 3 192.168.1.191
 给地图取一个只包含字母、数字、下划线或短横线的名字，例如 `lab_20260901`：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 mapping lab_20260901
 ```
 
@@ -140,7 +140,7 @@ RVIZ=true run_go2 mapping lab_20260901
 另开一个终端只做短命令即可，不需要手动 source：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 status
 ```
 
@@ -168,26 +168,26 @@ rosrun tf tf_echo odom base_link
 保持建图主 launch 运行，在第二个终端执行：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 save-map
 ```
 
 应生成：
 
 ```text
-/home/nvidia/go2_nav_ws/maps/lab_20260901/public_map.pcd
+/home/unitree/go2_nav_ws/maps/lab_20260901/public_map.pcd
 ```
 
 确认文件后，可在建图主终端按 `Ctrl-C` 正常退出：
 
 ```bash
-ls -lh /home/nvidia/go2_nav_ws/maps/lab_20260901/public_map.pcd
+ls -lh /home/unitree/go2_nav_ws/maps/lab_20260901/public_map.pcd
 ```
 
 ### 6.5 导出二维导航地图
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 export-map lab_20260901
 ```
 
@@ -206,7 +206,7 @@ map.yaml         # map_server 元数据
 ### 7.1 强制先做 mock 验证
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 navigation lab_20260901
 ```
 
@@ -272,7 +272,7 @@ rostopic echo /cmd_vel_safe
 每次切换实车前、重新定位后或怀疑残留目标时执行：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 reset-navigation
 ```
 
@@ -289,7 +289,7 @@ run_go2 reset-navigation
 结束 mock launch 后，以 real 模式重新启动：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 navigation lab_202609021334 --real
 ```
 
@@ -419,7 +419,7 @@ rostopic hz /go2/state/low_state
 ### 找不到地图
 
 ```bash
-ls -lh /home/nvidia/go2_nav_ws/maps/<map_name>/
+ls -lh /home/unitree/go2_nav_ws/maps/<map_name>/
 ```
 
 定位需要 `public_map.pcd`，move_base 需要 `map.yaml` 和 `map.pgm`，三者地图名必须一致。
@@ -446,7 +446,7 @@ ls -lh /home/nvidia/go2_nav_ws/maps/<map_name>/
 
 ### real bridge 无法连接 GO2
 
-检查 eth1 是否为 `192.168.123.199`、是否只启动一个 Unitree SDK2 bridge，以及机器人是否在正确工作模式。连接恢复前保持 disabled。
+检查 go2dds 是否为 `192.168.123.18`、是否只启动一个 Unitree SDK2 bridge，以及机器人是否在正确工作模式。连接恢复前保持 disabled。
 
 ### 机器人抽搐或速度突变
 

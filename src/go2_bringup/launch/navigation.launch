@@ -3,7 +3,7 @@
   <arg name="map_root" default="$(env HOME)/go2_nav_ws/maps"/>
   <arg name="start_lidar" default="true"/>
   <arg name="use_real_sdk" default="false"/>
-  <arg name="network_interface" default="eth1"/>
+  <arg name="network_interface" default="go2dds"/>
   <arg name="rviz" default="false"/>
 
   <group if="$(arg start_lidar)">

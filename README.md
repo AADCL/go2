@@ -8,6 +8,7 @@
 
 <p align="center">
   <img alt="版本" src="https://img.shields.io/badge/version-1.0.0-1677ff">
+  <img alt="硬件" src="https://img.shields.io/badge/hardware-Orin%20Nano-76B900">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
@@ -15,9 +16,11 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的三维建图，以及基于保存地图的重定位、自主规划和真机控制。自研代码集中在六个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [第三方版本](THIRD_PARTY.md) · [外参配置](src/go2_core/config/extrinsics.yaml) · [运动参数](src/go2_control/config/control.yaml) · [导航参数](src/go2_navigation/config)
+当前分支 `unitree-orin-nano` 专用于第二条机器狗的宇树官方 Orin Nano 处理器。第一条机器狗的 AGX Orin 版本保存在 `main` 分支；两个分支共享导航架构，但部署路径、雷达地址、DDS 接口及运行时依赖处理不同。
 
-> 当前完整版本由 2026-09-03 端侧审计及桌面工作空间快照整理。六个自研包、四套固定版本第三方源码，以及 6 组二维/三维地图均已纳入仓库；克隆后无需再手工补齐源码。
+**快速入口：** [第二条狗部署记录](DEPLOYMENT_192.168.50.111.md) · [完整启动手册](STARTUP_GUIDE.md) · [第三方版本](THIRD_PARTY.md) · [外参配置](src/go2_core/config/extrinsics.yaml) · [运动参数](src/go2_control/config/control.yaml)
+
+> 当前分支包含六个自研包、四套固定版本第三方源码，以及 8 组二维/三维地图；其中 `lab_202609061931` 和 `lab_202609062000` 来自第二条机器狗。
 
 ## 核心能力
 
@@ -71,7 +74,7 @@ go2/
 │   ├── go2_control/       # 速度整形、SDK2 bridge、底盘状态与诊断
 │   ├── go2_bringup/       # 建图和导航总 launch、系统状态监控
 │   └── third_party/       # FAST-LIO、Livox driver、Livox SDK2 与 Unitree SDK2
-├── maps/<map_name>/       # 6 组完整地图，每组包含 PCD、PGM 和 YAML
+├── maps/<map_name>/       # 8 组完整地图，每组包含 PCD、PGM 和 YAML
 ├── run_go2                # 统一操作入口
 ├── build_workspace.sh     # 编译并执行静态检查
 ├── validate_workspace.sh  # package 与 launch 检查
@@ -82,7 +85,7 @@ go2/
 
 ## 环境要求
 
-- NVIDIA Jetson，AArch64。
+- Unitree 官方 NVIDIA Orin Nano Developer Kit，AArch64、6 核 CPU、约 8 GB 内存。
 - Ubuntu 20.04、ROS Noetic、Python 3、C++14。
 - PCL、Eigen3、OpenMP、Boost。
 - ROS Navigation Stack、GlobalPlanner、TEB Local Planner、map_server。
@@ -105,13 +108,14 @@ go2/
 工作空间默认部署路径为：
 
 ```text
-/home/nvidia/go2_nav_ws
+/home/unitree/go2_nav_ws
 ```
 
 完整仓库已包含 `src/third_party` 中记录的四个第三方源码快照。克隆后安装 ROS 依赖并编译：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
+./install_dependencies.sh
 source /opt/ros/noetic/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 ./build_workspace.sh
@@ -244,6 +248,7 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 | 文档 | 内容 |
 | --- | --- |
+| [DEPLOYMENT_192.168.50.111.md](DEPLOYMENT_192.168.50.111.md) | 第二条狗的 Orin Nano、双网段、macvlan DDS 和现场部署记录 |
 | [STARTUP_GUIDE.md](STARTUP_GUIDE.md) | 建图、地图导出、重定位、导航、真机测试与故障排查 |
 | [THIRD_PARTY.md](THIRD_PARTY.md) | 第三方来源和记录修订版本 |
 | [go2_core/config](src/go2_core/config) | 机器人外参、frame 与网络配置 |
@@ -256,7 +261,7 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 - 六个自研 ROS 功能包及其配置、launch、消息和工具脚本；
 - `FAST_LIO`、`livox_ros_driver2`、`Livox-SDK2`、`Unitree_SDK2` 的固定快照；
-- `lab_202609021304` 至 `lab_202609031555` 共 6 组地图，每组均含 `public_map.pcd`、`map.pgm` 和 `map.yaml`；
+- 共 8 组完整地图，每组均含 `public_map.pcd`、`map.pgm` 和 `map.yaml`；
 - 一键启动、构建、验证脚本和完整现场操作手册。
 
 为保持仓库可复现且干净，Catkin 生成目录 `build/`、`devel/`、运行日志、rosbag、临时暂存目录和本地备份未纳入版本控制。这些均为构建或运行产物，不属于项目源码。第三方快照的来源与记录修订见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。

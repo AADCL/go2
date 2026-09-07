@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -eo pipefail
-WS_ROOT="/home/nvidia/go2_nav_ws"
 source /opt/ros/noetic/setup.bash
-source "${WS_ROOT}/devel/setup.bash"
 set -u
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+WS_ROOT="$(dirname "${SCRIPT_PATH}")"
+source "${WS_ROOT}/devel/setup.bash"
 
 for package in go2_core go2_mapping go2_localization go2_navigation go2_control go2_bringup fast_lio livox_ros_driver2; do
   rospack find "${package}" >/dev/null

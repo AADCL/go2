@@ -70,7 +70,7 @@ public:
     pnh_.param<std::string>("command_topic", command_topic_, "/cmd_vel_safe");
     pnh_.param<std::string>("localization_ok_topic", localization_ok_topic_,
                             "/localization/ok");
-    pnh_.param<std::string>("network_interface", network_interface_, "eth1");
+    pnh_.param<std::string>("network_interface", network_interface_, "go2dds");
     pnh_.param<std::string>("gait_mode", gait_mode_, "direct_mcf");
     pnh_.param("allow_motion_mode_switch", allow_motion_mode_switch_, false);
     pnh_.param<std::string>("motion_mode_selector", motion_mode_selector_,
