@@ -17,7 +17,7 @@
 
 **快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [第三方版本](THIRD_PARTY.md) · [外参配置](src/go2_core/config/extrinsics.yaml) · [运动参数](src/go2_control/config/control.yaml) · [导航参数](src/go2_navigation/config)
 
-> 当前提交由 2026-09-03 端侧审计及部署缓存整理。六个自研包和当前二维地图已包含；端侧离线期间无法取得的第三方源码与三维 `public_map.pcd` 未伪造补齐，详见[源码完整性](#源码完整性)。
+> 当前完整版本由 2026-09-03 端侧审计及桌面工作空间快照整理。六个自研包、四套固定版本第三方源码，以及 6 组二维/三维地图均已纳入仓库；克隆后无需再手工补齐源码。
 
 ## 核心能力
 
@@ -70,8 +70,8 @@ go2/
 │   ├── go2_navigation/    # move_base、GlobalPlanner、TEB 与目标监督
 │   ├── go2_control/       # 速度整形、SDK2 bridge、底盘状态与诊断
 │   ├── go2_bringup/       # 建图和导航总 launch、系统状态监控
-│   └── third_party/       # FAST-LIO、Livox driver 与 SDK2（需补齐）
-├── maps/<map_name>/       # 每张地图的 PCD、PGM 和 YAML
+│   └── third_party/       # FAST-LIO、Livox driver、Livox SDK2 与 Unitree SDK2
+├── maps/<map_name>/       # 6 组完整地图，每组包含 PCD、PGM 和 YAML
 ├── run_go2                # 统一操作入口
 ├── build_workspace.sh     # 编译并执行静态检查
 ├── validate_workspace.sh  # package 与 launch 检查
@@ -108,7 +108,7 @@ go2/
 /home/nvidia/go2_nav_ws
 ```
 
-先恢复 `src/third_party` 中记录的四个第三方源码目录，再安装 ROS 依赖并编译：
+完整仓库已包含 `src/third_party` 中记录的四个第三方源码快照。克隆后安装 ROS 依赖并编译：
 
 ```bash
 cd /home/nvidia/go2_nav_ws
@@ -252,16 +252,14 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 ## 源码完整性
 
-本仓库中的自研功能包、启动脚本、二维地图和迁移参考代码来自此前对 `/home/nvidia/go2_nav_ws` 的读取与已验证部署。生成本仓库时机器人不在线，以下内容尚未包含：
+本仓库是桌面 `go2_nav_ws` 完整工作空间的可复现源码版本，包含：
 
-- `src/third_party/FAST_LIO`
-- `src/third_party/livox_ros_driver2`
-- `src/third_party/Livox-SDK2`
-- `src/third_party/Unitree_SDK2`
-- `maps/lab_202609031555/public_map.pcd`
-- 端侧其他地图、rosbag、ROS 日志及构建产物
+- 六个自研 ROS 功能包及其配置、launch、消息和工具脚本；
+- `FAST_LIO`、`livox_ros_driver2`、`Livox-SDK2`、`Unitree_SDK2` 的固定快照；
+- `lab_202609021304` 至 `lab_202609031555` 共 6 组地图，每组均含 `public_map.pcd`、`map.pgm` 和 `map.yaml`；
+- 一键启动、构建、验证脚本和完整现场操作手册。
 
-因此，干净 clone 在补齐上述依赖前不能完成真机编译。这一限制不会通过下载任意最新版依赖来掩盖；机器人重新联网后应按 `THIRD_PARTY.md` 的记录版本补齐并重新验证。
+为保持仓库可复现且干净，Catkin 生成目录 `build/`、`devel/`、运行日志、rosbag、临时暂存目录和本地备份未纳入版本控制。这些均为构建或运行产物，不属于项目源码。第三方快照的来源与记录修订见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
 ---
 

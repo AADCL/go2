@@ -11,8 +11,7 @@
 *.db3
 .ros/
 
-# Large runtime maps are archived outside normal Git history.
-/maps/**/public_map.pcd
+# Temporary/incomplete map writes
 *.pcd.tmp
 
 # Editor and language caches
