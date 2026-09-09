@@ -93,7 +93,7 @@ grep -q 'minimum_largest_ground_component_ratio: 0.60' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
 grep -q 'max_reanchor_height_from_initial_m: 0.65' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_ground_to_baseline_free_ratio: 0.10' \
+grep -q 'minimum_ground_to_baseline_free_ratio: 0.08' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
 grep -q 'minimum_trajectory_corridor_known_ratio: 0.95' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
@@ -133,7 +133,7 @@ grep -q 'minimum_near_support_area_m2: 0.18' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'anchor_radius: 1.20' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
-grep -q 'minimum_ground_sectors: 4' \
+grep -q 'minimum_ground_sectors: 2' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'ground_plane_min_connected_cells: 12' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"

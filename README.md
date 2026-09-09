@@ -7,7 +7,7 @@
 <p align="center">Livox Mid-360 · FAST-LIO · NDT-OMP · move_base/TEB · Unitree SDK2</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-2.0.0-1677ff">
+  <img alt="版本" src="https://img.shields.io/badge/version-2.0.1-1677ff">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
@@ -15,9 +15,9 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.0 发布说明](docs/RELEASE_NOTES_V2.0.0.md) · [第三方版本](THIRD_PARTY.md)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) · [第三方版本](THIRD_PARTY.md)
 
-> V2.0.0 由 2026-09-09 机器狗 1 的已验证端侧状态生成。七个自研包、五套固定版本第三方源码、旧版兼容地图和新 2.5D 地形地图均已纳入仓库；历史版本继续保留在 Git 提交历史中。
+> V2.0.1 由 2026-09-09 机器狗 1 的已验证端侧状态生成，在 V2.0.0 功能快照上同步了最终地形门限的工作空间校验断言。七个自研包、五套固定版本第三方源码、旧版兼容地图和新 2.5D 地形地图均已纳入仓库；历史版本继续保留在 Git 提交历史中。
 
 ## 核心能力
 
@@ -248,6 +248,7 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 | [STARTUP_GUIDE.md](STARTUP_GUIDE.md) | 建图、地图导出、重定位、导航、真机测试与故障排查 |
 | [TERRAIN_OPTIMIZATION_GUIDE.md](TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
 | [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |
+| [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) | 最终地形门限的工作空间校验补丁 |
 | [V2.0.0 发布说明](docs/RELEASE_NOTES_V2.0.0.md) | 本版本范围、验证状态、兼容与回滚说明 |
 | [THIRD_PARTY.md](THIRD_PARTY.md) | 第三方来源和记录修订版本 |
 | [go2_core/config](src/go2_core/config) | 机器人外参、frame 与网络配置 |
