@@ -17,6 +17,7 @@
   <exec_depend>go2_localization</exec_depend>
   <exec_depend>go2_mapping</exec_depend>
   <exec_depend>go2_navigation</exec_depend>
+  <exec_depend>go2_terrain</exec_depend>
   <exec_depend>rviz</exec_depend>
   <export/>
 </package>

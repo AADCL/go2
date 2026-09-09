@@ -3,6 +3,8 @@
 #include <std_msgs/Bool.h>
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
+#include <string>
 
 class VelocityShaper {
  public:
@@ -28,6 +30,15 @@ class VelocityShaper {
                enforce_pure_turn_output_floor_, true);
     pnh_.param("allow_reverse", allow_reverse_, true);
     pnh_.param("rate_hz", rate_hz_, 50.0);
+    pnh_.param("require_terrain_health", require_terrain_health_, false);
+    pnh_.param("terrain_health_timeout_sec", terrain_health_timeout_sec_,
+               0.75);
+    pnh_.param<std::string>("terrain_health_topic", terrain_health_topic_,
+                            "/terrain/healthy");
+    if (terrain_health_timeout_sec_ <= 0.0) {
+      throw std::invalid_argument(
+          "terrain_health_timeout_sec must be positive");
+    }
     min_sustained_walk_vx_ = clamp(min_sustained_walk_vx_, 0.0, max_vx_);
     max_reverse_vx_ = clamp(max_reverse_vx_, 0.0, max_vx_);
     min_sustained_reverse_vx_ = clamp(
@@ -38,6 +49,11 @@ class VelocityShaper {
         &VelocityShaper::commandCallback, this);
     localization_sub_ = nh_.subscribe("/localization/ok", 10,
         &VelocityShaper::localizationCallback, this);
+    if (require_terrain_health_) {
+      terrain_health_sub_ = nh_.subscribe(
+          terrain_health_topic_, 1,
+          &VelocityShaper::terrainHealthCallback, this);
+    }
     command_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel_safe", 10);
     timer_ = nh_.createTimer(ros::Duration(1.0 / rate_hz_),
         &VelocityShaper::timerCallback, this);
@@ -54,6 +70,25 @@ class VelocityShaper {
            std::isfinite(msg.angular.z);
   }
 
+  bool terrainPermitted(const ros::WallTime& now) const {
+    return !require_terrain_health_ ||
+        (have_terrain_health_ && terrain_healthy_ &&
+         (now - last_terrain_health_).toSec() <=
+             terrain_health_timeout_sec_);
+  }
+
+  void stopImmediately(const char* reason) {
+    target_ = geometry_msgs::Twist();
+    current_ = geometry_msgs::Twist();
+    have_command_ = false;
+    clearPureTurnDirectionLock(reason);
+    pure_turn_zero_since_ = ros::WallTime();
+    yaw_zero_since_ = ros::WallTime::now();
+    if (command_pub_) {
+      command_pub_.publish(current_);
+    }
+  }
+
   void clearPureTurnDirectionLock(const char* reason) {
     if (pure_turn_direction_ == 0) return;
     ROS_INFO("Pure-turn direction lock cleared: %s", reason);
@@ -64,6 +99,12 @@ class VelocityShaper {
   void commandCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     if (!finite(*msg)) {
       ROS_ERROR_THROTTLE(1.0, "Rejected non-finite /cmd_vel_nav");
+      return;
+    }
+    if (!terrainPermitted(ros::WallTime::now())) {
+      ROS_WARN_THROTTLE(
+          1.0, "Rejected /cmd_vel_nav while terrain health gate is closed");
+      stopImmediately("terrain health gate closed");
       return;
     }
     target_ = *msg;
@@ -149,10 +190,37 @@ class VelocityShaper {
     }
   }
 
+  void terrainHealthCallback(const std_msgs::Bool::ConstPtr& msg) {
+    last_terrain_health_ = ros::WallTime::now();
+    have_terrain_health_ = true;
+    terrain_healthy_ = msg->data;
+    if (!terrain_healthy_) {
+      ROS_ERROR_THROTTLE(
+          1.0, "Terrain health false: velocity output stopped immediately");
+      stopImmediately("terrain health false");
+      terrain_gate_was_open_ = false;
+    }
+  }
+
   void timerCallback(const ros::TimerEvent&) {
     const ros::WallTime now = ros::WallTime::now();
     const double dt = std::max(0.001, (now - last_tick_).toSec());
     last_tick_ = now;
+
+    const bool terrain_permitted = terrainPermitted(now);
+    if (!terrain_permitted) {
+      if (terrain_gate_was_open_) {
+        ROS_ERROR(
+            "Terrain health heartbeat unavailable or stale: velocity output stopped");
+      }
+      terrain_gate_was_open_ = false;
+      stopImmediately("terrain health unavailable or stale");
+      return;
+    }
+    if (require_terrain_health_ && !terrain_gate_was_open_) {
+      ROS_INFO("Terrain health gate opened; waiting for a fresh velocity command");
+    }
+    terrain_gate_was_open_ = true;
 
     const bool fresh = have_command_ &&
         (now - last_command_).toSec() <= timeout_sec_;
@@ -226,17 +294,22 @@ class VelocityShaper {
   }
 
   ros::NodeHandle nh_, pnh_;
-  ros::Subscriber command_sub_, localization_sub_;
+  ros::Subscriber command_sub_, localization_sub_, terrain_health_sub_;
   ros::Publisher command_pub_;
   ros::Timer timer_;
   geometry_msgs::Twist target_, current_;
   ros::WallTime last_command_, last_tick_, yaw_zero_since_;
   ros::WallTime pure_turn_lock_started_;
   ros::WallTime pure_turn_zero_since_;
+  ros::WallTime last_terrain_health_;
   bool localization_ok_ = false;
   bool have_command_ = false;
   bool allow_reverse_ = true;
   bool enforce_pure_turn_output_floor_ = true;
+  bool require_terrain_health_ = false;
+  bool have_terrain_health_ = false;
+  bool terrain_healthy_ = false;
+  bool terrain_gate_was_open_ = false;
   double max_vx_, min_sustained_walk_vx_;
   double max_reverse_vx_, min_sustained_reverse_vx_;
   double max_wz_, min_in_place_wz_;
@@ -245,6 +318,8 @@ class VelocityShaper {
   double pure_turn_direction_lock_sec_;
   double pure_turn_zero_release_sec_;
   double rate_hz_;
+  double terrain_health_timeout_sec_ = 0.75;
+  std::string terrain_health_topic_ = "/terrain/healthy";
   int pure_turn_direction_ = 0;
 };
 

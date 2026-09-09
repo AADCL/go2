@@ -12,9 +12,17 @@
 
 #include <algorithm>
 
+#include <cctype>
+
 #include <cmath>
 
+#include <cerrno>
+
+#include <cstdio>
+
 #include <cstdint>
+
+#include <cstring>
 
 #include <fstream>
 
@@ -68,10 +76,27 @@ public:
 
         std::string());
 
-    if (input_pcd_.empty() || output_pgm_.empty() || output_yaml_.empty())
+    pnh_.param<std::string>("export_id", export_id_, std::string());
+
+    pnh_.param<std::string>(
+
+        "export_receipt",
+
+        export_receipt_,
+
+        std::string());
+
+    if (input_pcd_.empty() || output_pgm_.empty() || output_yaml_.empty() ||
+        export_id_.empty() || export_receipt_.empty())
     {
       throw std::runtime_error(
-          "input_pcd, output_pgm, and output_yaml parameters are required");
+          "input_pcd, output_pgm, output_yaml, export_id, and "
+          "export_receipt parameters are required");
+    }
+
+    if (!validExportId(export_id_))
+    {
+      throw std::runtime_error("export_id contains unsafe characters");
     }
 
 
@@ -131,6 +156,28 @@ public:
 
 
 private:
+
+  static bool validExportId(const std::string& value)
+
+  {
+
+    if (value.empty() || value.size() > 128)
+
+      return false;
+
+    for (const unsigned char ch : value)
+
+    {
+
+      if (!std::isalnum(ch) && ch != '-' && ch != '_' && ch != '.')
+
+        return false;
+
+    }
+
+    return true;
+
+  }
 
   static bool finitePoint(const pcl::PointXYZI& p)
 
@@ -294,6 +341,12 @@ private:
 
     out.close();
 
+    if (!out)
+
+      throw std::runtime_error(
+
+          "Failed while writing output PGM: " + output_pgm_);
+
   }
 
 
@@ -358,6 +411,310 @@ private:
 
     out.close();
 
+    if (!out)
+
+      throw std::runtime_error(
+
+          "Failed while writing output YAML: " + output_yaml_);
+
+  }
+
+  void validateTemporaryMapOutputs(const std::string& pgm_path,
+                                   const std::string& yaml_path,
+                                   std::size_t expected_pixels) const
+  {
+    std::ifstream pgm(pgm_path.c_str(), std::ios::in | std::ios::binary);
+    std::string magic;
+    int width = 0;
+    int height = 0;
+    int maximum = 0;
+    if (!(pgm >> magic >> width >> height >> maximum) || magic != "P5" ||
+        width != width_ || height != height_ || maximum != 255)
+    {
+      throw std::runtime_error("Temporary PGM header validation failed: " +
+                               pgm_path);
+    }
+    char separator = '\0';
+    if (!pgm.get(separator) || separator != '\n')
+    {
+      throw std::runtime_error("Temporary PGM header is not terminated: " +
+                               pgm_path);
+    }
+    const std::streamoff data_start = pgm.tellg();
+    pgm.seekg(0, std::ios::end);
+    const std::streamoff data_end = pgm.tellg();
+    if (data_start < 0 || data_end < data_start ||
+        static_cast<std::size_t>(data_end - data_start) != expected_pixels)
+    {
+      throw std::runtime_error("Temporary PGM payload validation failed: " +
+                               pgm_path);
+    }
+
+    std::ifstream yaml(yaml_path.c_str());
+    std::string first_line;
+    if (!std::getline(yaml, first_line))
+    {
+      throw std::runtime_error("Temporary YAML validation failed: " +
+                               yaml_path);
+    }
+    const std::size_t slash = output_pgm_.find_last_of('/');
+    const std::string image_name =
+        slash == std::string::npos ? output_pgm_
+                                   : output_pgm_.substr(slash + 1);
+    if (first_line != "image: " + image_name)
+    {
+      throw std::runtime_error("Temporary YAML image reference is invalid: " +
+                               yaml_path);
+    }
+  }
+
+  static bool fileExists(const std::string& path)
+  {
+    std::ifstream input(path.c_str(), std::ios::in | std::ios::binary);
+    return static_cast<bool>(input);
+  }
+
+  static void copyFile(const std::string& source,
+                       const std::string& destination)
+  {
+    std::ifstream input(source.c_str(), std::ios::in | std::ios::binary);
+    std::ofstream output(destination.c_str(),
+                         std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!input || !output)
+    {
+      std::remove(destination.c_str());
+      throw std::runtime_error("Cannot create export rollback backup: " +
+                               destination);
+    }
+    output << input.rdbuf();
+    output.close();
+    if (input.bad() || !output)
+    {
+      std::remove(destination.c_str());
+      throw std::runtime_error("Failed while writing export rollback backup: " +
+                               destination);
+    }
+  }
+
+  void writeMapOutputsAtomically(const std::vector<uint8_t>& grid)
+  {
+    const std::string final_pgm = output_pgm_;
+    const std::string final_yaml = output_yaml_;
+    const std::string temporary_pgm = final_pgm + ".tmp." + export_id_;
+    const std::string temporary_yaml = final_yaml + ".tmp." + export_id_;
+    const std::string backup_pgm = final_pgm + ".bak." + export_id_;
+    const std::string backup_yaml = final_yaml + ".bak." + export_id_;
+    if (fileExists(backup_pgm) || fileExists(backup_yaml))
+    {
+      throw std::runtime_error(
+          "Refusing to overwrite an existing export rollback backup for " +
+          export_id_);
+    }
+    std::remove(temporary_pgm.c_str());
+    std::remove(temporary_yaml.c_str());
+    try
+    {
+      output_pgm_ = temporary_pgm;
+      writePgm(grid);
+      output_pgm_ = final_pgm;
+      output_yaml_ = temporary_yaml;
+      writeYaml();
+      output_yaml_ = final_yaml;
+      validateTemporaryMapOutputs(temporary_pgm, temporary_yaml, grid.size());
+    }
+    catch (...)
+    {
+      output_pgm_ = final_pgm;
+      output_yaml_ = final_yaml;
+      std::remove(temporary_pgm.c_str());
+      std::remove(temporary_yaml.c_str());
+      throw;
+    }
+
+    const bool had_original_pgm = fileExists(final_pgm);
+    const bool had_original_yaml = fileExists(final_yaml);
+    bool backed_up_pgm = false;
+    bool backed_up_yaml = false;
+    try
+    {
+      if (had_original_pgm)
+      {
+        copyFile(final_pgm, backup_pgm);
+        backed_up_pgm = true;
+      }
+      if (had_original_yaml)
+      {
+        copyFile(final_yaml, backup_yaml);
+        backed_up_yaml = true;
+      }
+    }
+    catch (...)
+    {
+      if (backed_up_pgm)
+        std::remove(backup_pgm.c_str());
+      if (backed_up_yaml)
+        std::remove(backup_yaml.c_str());
+      std::remove(temporary_pgm.c_str());
+      std::remove(temporary_yaml.c_str());
+      throw;
+    }
+
+    bool committed_pgm = false;
+    bool committed_yaml = false;
+    std::string commit_error;
+    if (std::rename(temporary_pgm.c_str(), final_pgm.c_str()) != 0)
+    {
+      const int error_number = errno;
+      commit_error = "Cannot commit output PGM '" + final_pgm + "': " +
+                     std::strerror(error_number);
+    }
+    else
+    {
+      committed_pgm = true;
+      if (std::rename(temporary_yaml.c_str(), final_yaml.c_str()) != 0)
+      {
+        const int error_number = errno;
+        commit_error = "Cannot commit output YAML '" + final_yaml + "': " +
+                       std::strerror(error_number);
+      }
+      else
+      {
+        committed_yaml = true;
+      }
+    }
+
+    if (!commit_error.empty())
+    {
+      std::string rollback_error;
+      const auto append_rollback_error = [&rollback_error](
+          const std::string& message) {
+        if (!rollback_error.empty())
+          rollback_error += "; ";
+        rollback_error += message;
+      };
+
+      if (committed_pgm)
+      {
+        if (had_original_pgm)
+        {
+          if (std::rename(backup_pgm.c_str(), final_pgm.c_str()) != 0)
+          {
+            const int error_number = errno;
+            append_rollback_error("PGM restore failed; backup retained at '" +
+                                  backup_pgm + "': " +
+                                  std::strerror(error_number));
+          }
+          else
+          {
+            backed_up_pgm = false;
+          }
+        }
+        else if (std::remove(final_pgm.c_str()) != 0 && errno != ENOENT)
+        {
+          const int error_number = errno;
+          append_rollback_error("new PGM removal failed: " +
+                                std::string(std::strerror(error_number)));
+        }
+      }
+      if (committed_yaml)
+      {
+        if (had_original_yaml)
+        {
+          if (std::rename(backup_yaml.c_str(), final_yaml.c_str()) != 0)
+          {
+            const int error_number = errno;
+            append_rollback_error("YAML restore failed; backup retained at '" +
+                                  backup_yaml + "': " +
+                                  std::strerror(error_number));
+          }
+          else
+          {
+            backed_up_yaml = false;
+          }
+        }
+        else if (std::remove(final_yaml.c_str()) != 0 && errno != ENOENT)
+        {
+          const int error_number = errno;
+          append_rollback_error("new YAML removal failed: " +
+                                std::string(std::strerror(error_number)));
+        }
+      }
+
+      // An uncommitted destination was never changed; discard only its exact
+      // rollback copy. A failed restoration deliberately retains its backup.
+      if (!committed_pgm && backed_up_pgm)
+      {
+        std::remove(backup_pgm.c_str());
+        backed_up_pgm = false;
+      }
+      if (!committed_yaml && backed_up_yaml)
+      {
+        std::remove(backup_yaml.c_str());
+        backed_up_yaml = false;
+      }
+      std::remove(temporary_pgm.c_str());
+      std::remove(temporary_yaml.c_str());
+      if (!rollback_error.empty())
+        commit_error += "; rollback incomplete: " + rollback_error;
+      throw std::runtime_error(commit_error);
+    }
+
+    if (backed_up_pgm && std::remove(backup_pgm.c_str()) != 0)
+    {
+      ROS_WARN("Committed map but could not remove PGM rollback backup: %s",
+               backup_pgm.c_str());
+    }
+    if (backed_up_yaml && std::remove(backup_yaml.c_str()) != 0)
+    {
+      ROS_WARN("Committed map but could not remove YAML rollback backup: %s",
+               backup_yaml.c_str());
+    }
+  }
+
+
+
+  void writeExportReceipt()
+
+  {
+
+    const std::string temporary = export_receipt_ + ".tmp." + export_id_;
+
+    std::ofstream out(temporary.c_str(), std::ios::out | std::ios::trunc);
+
+    if (!out)
+
+      throw std::runtime_error(
+
+          "Cannot open temporary export receipt: " + temporary);
+
+    out << export_id_ << "\n";
+
+    out.close();
+
+    if (!out)
+
+    {
+
+      std::remove(temporary.c_str());
+
+      throw std::runtime_error(
+
+          "Failed while writing export receipt: " + temporary);
+
+    }
+
+    if (std::rename(temporary.c_str(), export_receipt_.c_str()) != 0)
+
+    {
+
+      std::remove(temporary.c_str());
+
+      throw std::runtime_error(
+
+          "Cannot commit export receipt: " + export_receipt_);
+
+    }
+
   }
 
 
@@ -382,13 +739,7 @@ private:
 
     {
 
-      ROS_FATAL("Failed to load PCD: %s",
-
-                input_pcd_.c_str());
-
-      ros::shutdown();
-
-      return;
+      throw std::runtime_error("Failed to load PCD: " + input_pcd_);
 
     }
 
@@ -402,11 +753,7 @@ private:
 
     {
 
-      ROS_FATAL("Input PCD is empty.");
-
-      ros::shutdown();
-
-      return;
+      throw std::runtime_error("Input PCD is empty: " + input_pcd_);
 
     }
 
@@ -460,11 +807,7 @@ private:
 
     {
 
-      ROS_FATAL("No finite points in PCD.");
-
-      ros::shutdown();
-
-      return;
+      throw std::runtime_error("No finite points in PCD: " + input_pcd_);
 
     }
 
@@ -696,9 +1039,10 @@ private:
 
 
 
-    writePgm(image);
+    writeMapOutputsAtomically(image);
 
-    writeYaml();
+    // This marker is the commit record for this invocation and must be last.
+    writeExportReceipt();
 
 
 
@@ -734,6 +1078,8 @@ private:
 
     ROS_INFO("YAML saved: %s", output_yaml_.c_str());
 
+    ROS_INFO("Export receipt saved: %s", export_receipt_.c_str());
+
 
 
     ROS_INFO(
@@ -765,6 +1111,10 @@ private:
   std::string output_pgm_;
 
   std::string output_yaml_;
+
+  std::string export_id_;
+
+  std::string export_receipt_;
 
 
 

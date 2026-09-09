@@ -6,7 +6,7 @@
 /home/nvidia/go2_nav_ws
 ```
 
-旧工程 `/home/nvidia/go2_mid360_nav` 未被修改，可用于对照和回退。新工作空间采用一个 catkin 工作空间、六个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。
+旧工程 `/home/nvidia/go2_mid360_nav` 未被修改，可用于对照和回退。新工作空间采用一个 catkin 工作空间、七个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。动态建图、2.5D 地形导出和坡度规划的完整规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
 
 ## 1. 运行前安全要求
 
@@ -19,6 +19,9 @@
 5. 启动 FAST-LIO 时机器人必须静止，等待初始姿态归一化完成后再移动。
 6. 执行 `enable` 前，必须先用遥控器或 App 让 GO2 正常站立并确认四足可正常迈步。`enable` 只读确认本机固件正在使用 `mcf` 高层控制器，不调用 MotionSwitcher、`StandUp()`、`BalanceStand()`、`ClassicWalk()` 或 `FreeAvoid()`；现场对照测试已证明这些姿态/步态切换会使当前固件进入暂时不执行 `Move` 的状态。
 7. 电池 SOC 低于 25% 时 bridge 拒绝使能。步态测试建议充至至少 40%～50%，避免低电压影响动态表现。
+8. 地形地图导航还会从实时连通地面估计 MID360 到局部坡面的实际高度。标准工作姿态
+   应在 `0.43-0.59 m`；蹲伏时 `/terrain/healthy=false` 是正确保护，先用遥控器或 App
+   正常站立，不能放宽高度阈值强行使能。
 
 ## 2. 工程结构
 
@@ -27,6 +30,7 @@ go2_nav_ws/
 ├── src/
 │   ├── go2_core/          # TF、里程计和点云坐标适配
 │   ├── go2_mapping/       # 三维地图累积和二维占据栅格导出
+│   ├── go2_terrain/       # 离线 2.5D 地形、全局坡度层和实时地面分割
 │   ├── go2_localization/  # 地图加载、NDT-OMP、定位质量保护
 │   ├── go2_navigation/    # map_server、move_base、TEB、导航监督
 │   ├── go2_control/       # 速度整形、超时保护、Unitree SDK2 bridge
@@ -35,7 +39,8 @@ go2_nav_ws/
 │       ├── FAST_LIO/
 │       ├── livox_ros_driver2/
 │       ├── Livox-SDK2/
-│       └── Unitree_SDK2/
+│       ├── Unitree_SDK2/
+│       └── patchworkpp/
 ├── maps/<map_name>/       # 每张地图独立保存
 ├── run_go2                # 统一操作入口，内部自动 source
 ├── build_workspace.sh     # 编译与静态校验
@@ -50,8 +55,8 @@ go2_nav_ws/
 - FAST-LIO 内部 LiDAR/IMU 平移：`[-0.011, -0.02329, 0.04412]` m，旋转矩阵为单位阵。
 - `base_link -> camera_link`：x=0.35 m，y=0，z=0.10 m；D435i 当前不参与定位和导航。
 - GO2 footprint：0.70 m × 0.31 m。
-- 当前室内边界：vx≤0.60 m/s，vy=0，|wz|≤0.80 rad/s。没有取消硬件边界，避免局部规划异常时向底盘发送无界速度。
-- TEB 允许最高 0.18 m/s 的短距离受控倒车；速度整形器将持续前进目标保持在至少 0.30 m/s、持续倒车目标保持在至少 0.12 m/s，并按 0.60 m/s² 的加速度限制平滑升降。转向死区为 0.01 rad/s，纯转向输出下限为 0.50 rad/s，SDK bridge 不再二次硬抬前进速度。
+- 当前室内验证上限：vx≤0.45 m/s，vy=0，|wz|≤0.30 rad/s。没有完全取消硬件边界，避免局部规划异常时向底盘发送无界速度。
+- 禁止规划器主动倒车。实机日志确认约 0.03～0.15 m/s 时不能稳定抬脚，因此速度整形器把非零前进目标提高到 0.20 m/s，再按 0.50 m/s² 的加速度限制平滑升降；SDK bridge 不再二次硬抬速度。转向死区降为 0.01 rad/s，TEB 的小角度路径修正会在 SDK 端提升至最低 0.04 rad/s，而不再被完全清零。
 
 这些参数是从旧工程迁移并明确固化的当前值；Mid-360 安装状态仍标记为 `provisional_preserved`，以后重新标定时只需更新唯一的外参文件和 FAST-LIO 内部外参。
 
@@ -60,7 +65,7 @@ go2_nav_ws/
 登录端侧：
 
 ```bash
-ssh nvidia@192.168.50.100
+ssh nvidia@192.168.50.110
 cd /home/nvidia/go2_nav_ws
 ```
 
@@ -95,8 +100,9 @@ run_go2 status
 
 | 设备 | 端侧网卡 | 端侧 IP | 设备 IP |
 |---|---|---|---|
-| Livox Mid-360 | eth0 | 192.168.1.50 | 192.168.1.191 |
-| GO2 EDU | eth1 | 192.168.123.199 | GO2 默认 192.168.123.x 网段 |
+| Livox Mid-360 | eth1 | 192.168.1.50 | 192.168.1.191 |
+| GO2 EDU | eth0 | 192.168.123.99 | GO2 默认 192.168.123.x 网段 |
+| 管理网络 | wlan0 | 192.168.50.110 | 操作电脑所在网段 |
 
 检查：
 
@@ -160,7 +166,7 @@ rosrun tf tf_echo odom base_link
 
 - 启动后的前几秒保持机器人静止。
 - 低速、平稳地遍历区域，尽量形成闭环。
-- 避免人员长时间紧贴机器人或大面积动态遮挡。
+- 人员可短时横穿以验证动态过滤，但不要长时间遮住固定结构。
 - 对走廊、门口和转弯处适当重复经过，以增加结构约束。
 
 ### 6.4 保存三维地图
@@ -176,12 +182,13 @@ run_go2 save-map
 
 ```text
 /home/nvidia/go2_nav_ws/maps/lab_20260901/public_map.pcd
+/home/nvidia/go2_nav_ws/maps/lab_20260901/traversed_path_map.pcd
 ```
 
 确认文件后，可在建图主终端按 `Ctrl-C` 正常退出：
 
 ```bash
-ls -lh /home/nvidia/go2_nav_ws/maps/lab_20260901/public_map.pcd
+ls -lh /home/nvidia/go2_nav_ws/maps/lab_20260901/{public_map.pcd,traversed_path_map.pcd}
 ```
 
 ### 6.5 导出二维导航地图
@@ -197,9 +204,12 @@ run_go2 export-map lab_20260901
 public_map.pcd   # NDT 三维定位地图
 map.pgm          # move_base 二维占据地图
 map.yaml         # map_server 元数据
+terrain_2p5d.yaml
+terrain_{elevation,slope,roughness,step}.f32
+terrain_{cost,confidence}.u8
 ```
 
-导出参数位于 `src/go2_mapping/config/occupancy.yaml`。若地面或桌面被错误投影成障碍，应先调整高度切片参数并重新导出，不要直接修改 PGM 掩盖问题。
+所有地图都会先使用 `src/go2_mapping/config/occupancy.yaml` 生成稳定二维占据图。新地图随后使用 `src/go2_terrain/config/terrain_export.yaml` 重建地形，并以二维图作为不可缩减的 known 基底：连续地面可纠正绝对 Z 投影造成的坡面伪障碍，轨迹补洞只能填 unknown，真实障碍最后覆盖；任何地形质量门或校验失败都会保留上一版正式地图。旧地图不会自动补生成地形层。完整资产、参数和校验规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
 
 ## 7. 第二次流程：重定位与自主导航
 
@@ -252,9 +262,21 @@ rostopic echo -n 1 /navigation/ready
 rosrun tf tf_echo map base_link
 ```
 
-只有 `/localization/ok: true` 且 `/navigation/ready: true` 时才允许进入目标测试。
+此时先确认 `/localization/ok: true`。SDK bridge（包括 mock）启动时默认
+disabled，因此执行下一节的 reset/enable 前，`/navigation/ready: false` 是正常状态。
 
 ### 7.3 mock 模式发送目标
+
+先清除初始化期间的目标和 costmap，再放行 mock 后端：
+
+```bash
+run_go2 reset-navigation
+run_go2 enable
+```
+
+`run_go2` 会自动发现当前唯一的 `/go2_sdk_bridge_mock/enable` 服务；mock 只记录
+`/cmd_vel_safe`，不会加载 Unitree SDK 或向底盘发送数据。若 real 和 mock 服务同时
+存在，命令会拒绝 Enable。确认 `/navigation/ready: true` 后再发送目标。
 
 RViz Fixed Frame 保持 `map`，使用 “2D Nav Goal” 发布目标。观察：
 
@@ -265,7 +287,8 @@ rostopic echo /cmd_vel_nav
 rostopic echo /cmd_vel_safe
 ```
 
-确认全局路径不穿墙、局部代价地图障碍合理、TEB 只在必要时产生受限倒车速度、`/cmd_vel_safe` 平滑且超时归零。
+确认全局路径不穿墙、局部代价地图障碍合理、TEB 不产生倒车速度、`/cmd_vel_safe` 平滑且超时归零。
+检查完成后执行 `run_go2 disable`，再在主 launch 窗口按 `Ctrl+C`。
 
 ### 7.4 清除旧目标和旧控制状态
 
@@ -381,12 +404,12 @@ map -> odom -> base_link -> lidar_link
 
 - NDT 检查收敛状态、fitness、矩阵有限性、单次位置/角度跳变和匹配超时。
 - localization guard 对全局位姿做第二层连续性检查，连续正常后才允许导航。
-- navigation supervisor 只在定位与底盘控制均就绪时转发新目标；任一状态失效时取消目标并发送零速度，未就绪期间的新目标直接拒绝。
-- velocity shaper 禁止横移，仅允许最高 0.18 m/s 的受控倒车，限制速度/加速度，并在 0.5 s 无新命令时归零。
+- navigation supervisor 在定位从正常变为异常时取消目标并发送零速度。
+- velocity shaper 禁止倒车和横移，限制速度/加速度，并在 0.5 s 无新命令时归零。
 - real SDK bridge 再次检查定位状态和命令超时；启动默认 disabled。
 - real SDK bridge 在每次成功 `enable` 前只读确认实际控制器为本机已注册的 `mcf`，但保持机器人已经站立且经遥控器验证的运动状态，不再调用姿态或 gait 切换 API。现场返回码 `7004` 已证明 `normal`、`sport_mode` 和 `ai` 都不是这台固件接受的选择名，因此默认禁止自动切换控制器。
-- 非零速度持续 6 秒后，bridge 会同时检查 12 个关节的运动速度和四足是否出现卸载。SDK 若返回成功但没有真实迈步响应，bridge 会自动 disabled 并发送 `StopMove`；诊断中 `no_step_response=true`。
-- Bridge 在 enabled 期间，无目标、TEB 零速和命令超时均持续发送 `Move(0,0,0)`，不再反复退出和重入底盘运动状态机。只有显式 disable、定位丢失、no-step watchdog 或节点退出才发送 `StopMove`。SDK 控制频率为 200 Hz，并保留纯转向方向锁定和零脉冲释放滞回。
+- 非零速度持续 3 秒后，bridge 会同时检查 12 个关节的运动速度和四足是否出现卸载。SDK 若返回成功但没有真实迈步响应，bridge 会自动 disabled 并发送 `StopMove`；诊断中 `no_step_response=true`。
+- Bridge 在 enabled 期间，无目标、TEB 零速和命令超时均持续发送 `Move(0,0,0)`，不再反复退出和重入底盘运动状态机。只有显式 disable、定位丢失、no-step watchdog 或节点退出才发送 `StopMove`。SDK 控制频率为 20 Hz，并保留转向换向滞回。
 
 ### 9.1 查看 GO2 底盘与电池状态
 
@@ -426,7 +449,7 @@ ls -lh /home/nvidia/go2_nav_ws/maps/<map_name>/
 
 ### 没有 `/livox/lidar`
 
-检查 eth0 地址、Mid-360 电源、设备 IP 和 `livox_ros_driver2` 配置。不要在同时运行旧、新两个 Livox driver 的情况下排查，否则会产生端口占用或重复 publisher。
+检查 eth1 地址、Mid-360 电源、设备 IP 和 `livox_ros_driver2` 配置。不要在同时运行旧、新两个 Livox driver 的情况下排查，否则会产生端口占用或重复 publisher。
 
 ### 没有 `/odom_nav`
 
@@ -444,13 +467,23 @@ ls -lh /home/nvidia/go2_nav_ws/maps/<map_name>/
 
 检查 `/navigation/ready`、目标 frame、costmap 数据与 move_base 状态。定位保护未通过时无速度是正确行为。
 
+地形地图还要检查：
+
+```bash
+rostopic echo -n 1 /terrain/status
+```
+
+若提示 `estimated MID360 height is below the configured minimum`，说明机器人仍处于
+低姿态，或实际安装/地面参考异常；先恢复标准站姿并检查外参。若提示地面平面样本、
+几何或残差不合格，检查雷达遮挡和附近地面，不能直接关闭地形健康门。
+
 ### real bridge 无法连接 GO2
 
-检查 eth1 是否为 `192.168.123.199`、是否只启动一个 Unitree SDK2 bridge，以及机器人是否在正确工作模式。连接恢复前保持 disabled。
+检查 eth0 是否为 `192.168.123.99`、是否只启动一个 Unitree SDK2 bridge，以及机器人是否在正确工作模式。连接恢复前保持 disabled。
 
 ### 机器人抽搐或速度突变
 
-先 disable，记录 `/cmd_vel_nav`、`/cmd_vel_safe`、`/go2/state/low_state` 和 `/go2/diagnostics`。确认 `gait_mode=direct_mcf`、`allow_motion_mode_switch=false`、`active_motion_mode=mcf`、`last_move_sdk_result=0` 和 `no_step_response=false`。本机 `/go2/state/sport_mode` 在不同姿态阶段报告过 `error_code=100` 和 `1002`；该字段没有随 SDK 提供枚举，不能把它单独解释为成功或失败，也不能只用 `gait_type` 和抬脚高度判断是否迈步，应以 `low_state` 的关节速度和四足受力为准。新链最大前进速度为 0.60 m/s，最低持续步行目标为 0.30 m/s，并由速度整形器平滑升降；若 `/cmd_vel_nav` 本身振荡，应调 TEB/代价地图，而不是继续移除底盘安全边界。
+先 disable，记录 `/cmd_vel_nav`、`/cmd_vel_safe`、`/go2/state/low_state` 和 `/go2/diagnostics`。确认 `gait_mode=direct_mcf`、`allow_motion_mode_switch=false`、`active_motion_mode=mcf`、`last_move_sdk_result=0` 和 `no_step_response=false`。本机 `/go2/state/sport_mode` 在不同姿态阶段报告过 `error_code=100` 和 `1002`；该字段没有随 SDK 提供枚举，不能把它单独解释为成功或失败，也不能只用 `gait_type` 和抬脚高度判断是否迈步，应以 `low_state` 的关节速度和四足受力为准。新链最大前进速度为 0.45 m/s，最低持续步行目标为 0.20 m/s，并由速度整形器平滑升降；若 `/cmd_vel_nav` 本身振荡，应调 TEB/代价地图，而不是继续移除底盘安全边界。
 
 ### 隔离导航链测试官方底盘 Move
 
@@ -479,8 +512,8 @@ rostopic echo -n 1 /move_base/status
 ```
 
 如果状态为 `4` 且文本包含 `Robot is oscillating`，这不是正常到达。当前
-GO2 参数使用 20 s 的振荡观察窗口和 0.08 m 的进展距离，并修正了 TEB
-不允许 `max_vel_x_backwards<=penalty_epsilon` 的约束。当前仅允许最高 0.18 m/s 的受控倒车；
+GO2 参数使用 12 s 的振荡观察窗口和 0.08 m 的进展距离，并修正了 TEB
+不允许 `max_vel_x_backwards<=penalty_epsilon` 的约束。硬件边界仍禁止倒车；
 如果仍然中止，应录制 `/cmd_vel_nav`、`/cmd_vel_safe`、`/odom_nav` 和局部
 轨迹，区分局部代价地图阻塞与底盘未执行命令。
 
@@ -517,6 +550,8 @@ rostopic echo -n 1 /go2/diagnostics
 | FAST-LIO | `src/go2_bringup/config/fast_lio_mid360.yaml` |
 | 三维建图 | `src/go2_mapping/config/mapper.yaml` |
 | PCD 到 PGM | `src/go2_mapping/config/occupancy.yaml` |
+| 新地图地形重建/坡度代价 | `src/go2_terrain/config/terrain_export.yaml` |
+| 实时地面分割 | `src/go2_terrain/config/patchworkpp_go2.yaml`、`terrain_guard_go2.yaml` |
 | NDT | `src/go2_localization/config/localization.yaml` |
 | 定位保护 | `src/go2_localization/config/guard.yaml` |
 | costmap/move_base/TEB | `src/go2_navigation/config/` |

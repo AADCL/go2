@@ -1,0 +1,81 @@
+# Output geometry. Existing map.yaml geometry is reused when present; otherwise
+# bounds are derived from public_map.pcd with this padding.
+resolution: 0.05
+map_padding_m: 0.50
+
+base_height:
+  search_radius: 1.00
+  min: 0.20
+  max: 0.55
+  min_points: 20
+
+ground:
+  # Use only the low support band to prevent same-column ceiling returns from
+  # invalidating a real floor surface.
+  candidate_quantile: 0.05
+  candidate_support_band: 0.12
+  candidate_max_vertical_span: 0.25
+  trajectory_seed_radius: 0.25
+  seed_height_tolerance: 0.15
+  seed_cell_height_tolerance: 0.04
+  max_trajectory_gap_m: 0.50
+  # Long gaps reacquire against this absolute band around the initial floor,
+  # not against the last tracked Z. This permits long ramps while excluding
+  # a 0.8 m suspended/table surface and the ceiling band near +2.55 m.
+  max_reanchor_height_from_initial_m: 0.65
+  # At 0.05 m resolution this yields a maximum adjacent rise of about
+  # tan(35 deg)*0.05 + 0.005 = 0.040 m. A 0.05 m step is therefore not ground.
+  growth_height_margin: 0.005
+  growth_fill_iterations: 3
+  max_slope_deg: 35.0
+  plane_radius: 0.30
+  plane_min_cells: 4
+  plane_huber_m: 0.03
+  max_plane_rmse: 0.08
+
+pmf:
+  max_window_size: 20
+  slope: 0.70
+  initial_distance: 0.08
+  max_distance: 0.30
+
+obstacle:
+  min_height: 0.05
+  max_height: 1.50
+  ground_search: 0.30
+  min_points: 1
+
+occupancy:
+  # Preserve the legacy occupancy export as the atomic baseline. Terrain
+  # obstacles are applied last. Strong continuous-ground evidence may clear a
+  # legacy false obstacle caused by absolute-Z slope projection. Trajectory-
+  # only evidence fills unknown cells but cannot clear an occupied baseline.
+  preserve_existing_map: true
+  trajectory_free_radius: 0.18
+  obstacle_inflation_m: 0.03
+
+# Fail before atomic commit when terrain reconstruction is too sparse. These
+# checks apply to terrain itself, so a complete legacy occupancy baseline
+# cannot hide a broken slope/elevation product.
+quality:
+  minimum_traced_trajectory_ratio: 0.80
+  # Ratio of trajectory-anchored, slope-bounded candidates retained by robust
+  # local plane fitting. PMF remains a re-anchor source, not indoor truth.
+  minimum_ground_observation_ratio: 0.30
+  # Connectivity includes the physically traversed, gap-bounded corridor only
+  # for this metric. It does not create elevation, cost, free, or obstacle data.
+  minimum_largest_ground_component_ratio: 0.60
+  # This global coverage ratio varies with traversal length; structural quality
+  # remains protected by the ground, fit, connectivity, and corridor gates above.
+  minimum_ground_to_baseline_free_ratio: 0.08
+  minimum_trajectory_corridor_known_ratio: 0.95
+
+cost:
+  flat_slope_deg: 8.0
+  lethal_slope_deg: 30.0
+  minimum_cost: 15
+  maximum_soft_cost: 80
+  minimum_lethal_cluster_cells: 4
+  dilation_m: 0.20
+
+minimum_ground_cells: 100

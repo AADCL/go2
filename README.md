@@ -7,26 +7,26 @@
 <p align="center">Livox Mid-360 · FAST-LIO · NDT-OMP · move_base/TEB · Unitree SDK2</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-1.0.0-1677ff">
+  <img alt="版本" src="https://img.shields.io/badge/version-2.0.0-1677ff">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
 </p>
 
-本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的三维建图，以及基于保存地图的重定位、自主规划和真机控制。自研代码集中在六个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
+本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [第三方版本](THIRD_PARTY.md) · [外参配置](src/go2_core/config/extrinsics.yaml) · [运动参数](src/go2_control/config/control.yaml) · [导航参数](src/go2_navigation/config)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.0 发布说明](docs/RELEASE_NOTES_V2.0.0.md) · [第三方版本](THIRD_PARTY.md)
 
-> 当前完整版本由 2026-09-03 端侧审计及桌面工作空间快照整理。六个自研包、四套固定版本第三方源码，以及 6 组二维/三维地图均已纳入仓库；克隆后无需再手工补齐源码。
+> V2.0.0 由 2026-09-09 机器狗 1 的已验证端侧状态生成。七个自研包、五套固定版本第三方源码、旧版兼容地图和新 2.5D 地形地图均已纳入仓库；历史版本继续保留在 Git 提交历史中。
 
 ## 核心能力
 
 | 能力 | 实现 |
 | --- | --- |
-| 三维建图 | Mid-360 驱动、FAST-LIO、静态点云筛选与累积、PCD 原子保存 |
-| 二维地图 | 从三维 PCD 导出 PGM/YAML，占据、自由与未知区域分离 |
+| 三维建图 | Mid-360、FAST-LIO、六自由度射线原点、两级贝叶斯动态过滤和 PCD 原子快照 |
+| 二维/地形地图 | PGM/YAML 与 elevation、slope、roughness、step、cost、confidence 六层 2.5D 资产 |
 | 重定位 | NDT-OMP 匹配、`map -> odom` 唯一发布、位姿跳变限制和定位健康检测 |
-| 路径规划 | `move_base`、GlobalPlanner、TEB、本地实时点云避障和窄通道参数 |
+| 路径规划 | `move_base`、GlobalPlanner、全局坡度代价、TEB、Patchwork++ 局部实时避障 |
 | 真机控制 | 连续速度整形、Unitree SDK2 SportClient、命令超时、步态响应监测 |
 | 安全门控 | 定位与底盘状态联合准入、旧目标清理、失效停车、电量门槛和诊断输出 |
 | 一键启动 | `run_go2` 自动加载 ROS 和工作空间，统一管理建图、导航、地图与底盘状态 |
@@ -36,13 +36,11 @@
 第一次建图：
 
 ```text
-Livox Mid-360
-  -> FAST-LIO
-  -> pose/cloud adapters
-  -> static map accumulator
-  -> public_map.pcd
-  -> occupancy exporter
-  -> map.pgm + map.yaml
+Livox Mid-360 -> FAST-LIO -> timestamped 6DoF ray origin
+                              -> Bayesian static/dynamic mapper
+                              -> public_map.pcd + traversed_path_map.pcd
+                              -> atomic occupancy + terrain exporter
+                              -> map.pgm/yaml + terrain_2p5d assets
 ```
 
 第二次重定位与导航：
@@ -52,12 +50,12 @@ Livox Mid-360 -> FAST-LIO -> odom -> base_link
                                   |
 public_map.pcd -> NDT-OMP --------+-> map -> odom
                                   |
-map.pgm -> GlobalPlanner -> TEB -> velocity shaper
-                                  -> navigation supervisor
-                                  -> Unitree SDK2 bridge -> GO2
+map.pgm -> StaticLayer -> Go2TerrainLayer -> GlobalPlanner
+live cloud -> Patchwork++ -> Terrain Guard -> local ObstacleLayer
+GlobalPlanner -> TEB -> velocity shaper -> Unitree SDK2 bridge -> GO2
 ```
 
-`go2_navigation_supervisor` 截获 RViz 的 `/move_base_simple/goal`。只有定位有效且底盘控制已使能时，目标才会转发到 `/move_base/validated_goal`；状态丢失时会取消目标并发送零速度，重新使能后必须发布新目标。
+`go2_navigation_supervisor` 截获 RViz 的 `/move_base_simple/goal` 和公开 action。只有定位、底盘控制、实时地形链和内部 `move_base` 同时就绪时，目标才会转发到隔离的内部 action server；任一状态丢失都会取消目标并发送零速度，恢复后必须发布新目标。
 
 ## 目录结构
 
@@ -70,15 +68,16 @@ go2/
 │   ├── go2_navigation/    # move_base、GlobalPlanner、TEB 与目标监督
 │   ├── go2_control/       # 速度整形、SDK2 bridge、底盘状态与诊断
 │   ├── go2_bringup/       # 建图和导航总 launch、系统状态监控
-│   └── third_party/       # FAST-LIO、Livox driver、Livox SDK2 与 Unitree SDK2
-├── maps/<map_name>/       # 6 组完整地图，每组包含 PCD、PGM 和 YAML
+│   ├── go2_terrain/       # 离线地形重建、全局坡度层和实时地面/障碍分类
+│   └── third_party/       # FAST-LIO、Livox、Unitree SDK2 与 Patchwork++
+├── maps/<map_name>/       # 历史地图及当前 PCD/PGM/2.5D 验证地图
 ├── run_go2                # 统一操作入口
 ├── build_workspace.sh     # 编译并执行静态检查
 ├── validate_workspace.sh  # package 与 launch 检查
 └── STARTUP_GUIDE.md       # 详细现场操作手册
 ```
 
-六个自研 ROS 包均为 `1.0.0`。重组前的重复功能包未发布到活动仓库，避免形成重复包、重复 TF 或重复 publisher；它们只保留在本地离线归档中用于追溯。
+七个自研 ROS 包均位于 `src/`。重组前的重复功能包未发布到活动仓库，避免形成重复包、重复 TF 或重复 publisher；旧 `/home/nvidia/go2_mid360_nav` 工作树已退出运行链并在 V2.0.0 发布后清理，历史源码由 Git 提交保留。
 
 ## 环境要求
 
@@ -108,7 +107,7 @@ go2/
 /home/nvidia/go2_nav_ws
 ```
 
-完整仓库已包含 `src/third_party` 中记录的四个第三方源码快照。克隆后安装 ROS 依赖并编译：
+完整仓库已包含 `src/third_party` 中记录的五个第三方源码快照。克隆后安装 ROS 依赖并编译：
 
 ```bash
 cd /home/nvidia/go2_nav_ws
@@ -133,7 +132,7 @@ run_go2 mapping lab01
 RVIZ=true run_go2 mapping lab01
 ```
 
-机器人静止完成 FAST-LIO 初始化后开始采集。完成后依次保存三维地图并导出二维地图：
+机器人静止完成 FAST-LIO 初始化后开始采集。完成后依次保存三维地图并导出二维地图与地形资产：
 
 ```bash
 run_go2 save-map
@@ -144,8 +143,10 @@ run_go2 export-map lab01
 
 ```text
 maps/lab01/public_map.pcd
+maps/lab01/traversed_path_map.pcd
 maps/lab01/map.pgm
 maps/lab01/map.yaml
+maps/lab01/terrain_2p5d.yaml
 ```
 
 ### 第二次：重定位与自主导航
@@ -198,7 +199,7 @@ RViz 的 Fixed Frame 必须设为 `map`。
 | `/localization/pose` | NDT 全局位姿 | `map` |
 | `/localization/ok` | 定位健康门控 | 无 frame |
 | `/move_base_simple/goal` | RViz 原始目标 | `map` |
-| `/move_base/validated_goal` | 监督器放行目标 | `map` |
+| `/navigation/ready` | 定位、控制、地形链与内部规划器联合就绪状态 | 无 frame |
 | `/cmd_vel_nav` | TEB 输出 | 无 frame |
 | `/cmd_vel_safe` | 整形与限幅后速度 | 无 frame |
 
@@ -245,6 +246,9 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 | 文档 | 内容 |
 | --- | --- |
 | [STARTUP_GUIDE.md](STARTUP_GUIDE.md) | 建图、地图导出、重定位、导航、真机测试与故障排查 |
+| [TERRAIN_OPTIMIZATION_GUIDE.md](TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
+| [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |
+| [V2.0.0 发布说明](docs/RELEASE_NOTES_V2.0.0.md) | 本版本范围、验证状态、兼容与回滚说明 |
 | [THIRD_PARTY.md](THIRD_PARTY.md) | 第三方来源和记录修订版本 |
 | [go2_core/config](src/go2_core/config) | 机器人外参、frame 与网络配置 |
 | [go2_navigation/config](src/go2_navigation/config) | costmap、GlobalPlanner、TEB 和 move_base 参数 |
@@ -254,9 +258,9 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 本仓库是桌面 `go2_nav_ws` 完整工作空间的可复现源码版本，包含：
 
-- 六个自研 ROS 功能包及其配置、launch、消息和工具脚本；
-- `FAST_LIO`、`livox_ros_driver2`、`Livox-SDK2`、`Unitree_SDK2` 的固定快照；
-- `lab_202609021304` 至 `lab_202609031555` 共 6 组地图，每组均含 `public_map.pcd`、`map.pgm` 和 `map.yaml`；
+- 七个自研 ROS 功能包及其配置、launch、消息、插件和工具脚本；
+- `FAST_LIO`、`livox_ros_driver2`、`Livox-SDK2`、`Unitree_SDK2`、Patchwork++ 的固定快照；
+- 六组历史地图、`lab_202609081650` 兼容地图及最终验证地图 `lab_202609091725`；
 - 一键启动、构建、验证脚本和完整现场操作手册。
 
 为保持仓库可复现且干净，Catkin 生成目录 `build/`、`devel/`、运行日志、rosbag、临时暂存目录和本地备份未纳入版本控制。这些均为构建或运行产物，不属于项目源码。第三方快照的来源与记录修订见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。

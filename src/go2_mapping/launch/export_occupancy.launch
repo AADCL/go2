@@ -4,6 +4,8 @@
   <arg name="input_pcd" default="$(arg map_root)/$(arg map_name)/public_map.pcd"/>
   <arg name="output_pgm" default="$(arg map_root)/$(arg map_name)/map.pgm"/>
   <arg name="output_yaml" default="$(arg map_root)/$(arg map_name)/map.yaml"/>
+  <arg name="export_id" default="$(anon legacy_export)"/>
+  <arg name="export_receipt" default="$(arg map_root)/$(arg map_name)/.go2_legacy_export_receipt"/>
 
   <node pkg="go2_mapping" type="go2_map_exporter_node" name="go2_map_exporter"
         output="screen" required="true">
@@ -11,5 +13,7 @@
     <param name="input_pcd" value="$(arg input_pcd)"/>
     <param name="output_pgm" value="$(arg output_pgm)"/>
     <param name="output_yaml" value="$(arg output_yaml)"/>
+    <param name="export_id" value="$(arg export_id)"/>
+    <param name="export_receipt" value="$(arg export_receipt)"/>
   </node>
 </launch>

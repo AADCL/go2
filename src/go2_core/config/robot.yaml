@@ -20,8 +20,8 @@ motion_limits:
   command_timeout_sec: 0.50
 
 network:
-  livox_interface: eth0
+  livox_interface: eth1
   livox_host_ip: 192.168.1.50
   livox_device_ip: 192.168.1.191
-  go2_interface: eth1
-  go2_host_ip: 192.168.123.199
+  go2_interface: eth0
+  go2_host_ip: 192.168.123.99

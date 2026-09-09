@@ -20,3 +20,8 @@ pure_turn_zero_release_sec: 0.35
 enforce_pure_turn_output_floor: true
 allow_reverse: true
 rate_hz: 20.0
+# Enabled only by terrain navigation launch. This is independent of
+# /navigation/ready so control enable cannot create a readiness cycle.
+require_terrain_health: false
+terrain_health_topic: /terrain/healthy
+terrain_health_timeout_sec: 0.75

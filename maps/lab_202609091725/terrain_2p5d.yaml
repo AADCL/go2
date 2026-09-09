@@ -1,0 +1,65 @@
+format: go2_terrain_2p5d
+version: 1
+export_id: 20260909T104945Z-8741-21895-11916
+frame_id: map
+generated_utc: 2026-09-09T10:52:31Z
+source_pcd: public_map.pcd
+trajectory_pcd: traversed_path_map.pcd
+base_to_floor_m: 0.3247395753860474
+checksum_file: terrain_checksums.sha256
+map:
+  image: map.pgm
+  width: 195
+  height: 218
+  resolution: 0.05
+  origin: [-2.921124, -6.988727, 0]
+layers:
+  elevation:
+    file: terrain_elevation.f32
+    type: float32_le
+    unknown: nan
+    unit: m
+  slope:
+    file: terrain_slope.f32
+    type: float32_le
+    unknown: nan
+    unit: deg
+  roughness:
+    file: terrain_roughness.f32
+    type: float32_le
+    unknown: nan
+    unit: m
+  step:
+    file: terrain_step.f32
+    type: float32_le
+    unknown: nan
+    unit: m
+  cost:
+    file: terrain_cost.u8
+    type: uint8
+    unknown: 255
+    unit: cost
+  confidence:
+    file: terrain_confidence.u8
+    type: uint8
+    unknown: 255
+    unit: percent
+parameters:
+  ground_max_slope_deg: 35
+  obstacle_min_height_m: 0.05
+  obstacle_max_height_m: 1.5
+  trajectory_free_radius_m: 0.18
+  obstacle_inflation_m: 0.03
+  preserve_existing_map: 1
+  maximum_reanchor_height_from_initial_m: 0.65
+  minimum_traced_trajectory_ratio: 0.8
+  minimum_ground_observation_ratio: 0.3
+  minimum_largest_ground_component_ratio: 0.6
+  minimum_ground_to_baseline_free_ratio: 0.08
+  minimum_trajectory_corridor_known_ratio: 0.95
+  flat_slope_deg: 8
+  lethal_slope_deg: 30
+  minimum_slope_cost: 15
+  maximum_soft_slope_cost: 80
+  slope_cost_dilation_m: 0.2
+  minimum_lethal_cluster_cells: 4

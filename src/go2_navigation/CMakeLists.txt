@@ -3,7 +3,8 @@ project(go2_navigation)
 
 add_compile_options(-std=c++14 -O3 -Wall)
 find_package(catkin REQUIRED COMPONENTS
-  actionlib_msgs geometry_msgs move_base_msgs roscpp rospy std_msgs std_srvs)
+  actionlib actionlib_msgs geometry_msgs move_base_msgs roscpp rospy std_msgs
+  std_srvs)
 catkin_package()
 include_directories(${catkin_INCLUDE_DIRS})
 
