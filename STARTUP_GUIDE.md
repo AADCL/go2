@@ -6,7 +6,7 @@
 /home/nvidia/go2_nav_ws
 ```
 
-旧工程 `/home/nvidia/go2_mid360_nav` 未被修改，可用于对照和回退。新工作空间采用一个 catkin 工作空间、七个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。动态建图、2.5D 地形导出和坡度规划的完整规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
+旧工程 `/home/nvidia/go2_mid360_nav` 已在 V2.0.0 发布并验证后从机器狗 1 清理；需要对照或回退时使用 Git 历史和 `v2.0.0` 标签。新工作空间采用一个 catkin 工作空间、七个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。动态建图、2.5D 地形导出和坡度规划的完整规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
 
 ## 1. 运行前安全要求
 
@@ -398,7 +398,7 @@ map -> odom -> base_link -> lidar_link
 | `/go2/state/sport_mode` | 完整 `rt/sportmodestate`：mode、gait type、抬脚高度、机身速度、足端状态等 | `base_link` |
 | `/go2/diagnostics` | DDS 新鲜度、使能状态、当前 gait type 和电池摘要 | 无 frame |
 
-正式活动链中没有 `/global_path -> /sparse_waypoints -> /ego/goal -> /planning/pos_cmd`，也不需要 Goal Bridge。原 EGO 链保留在旧工程中作为历史参考，不应与新 move_base/TEB 链同时启动。
+正式活动链中没有 `/global_path -> /sparse_waypoints -> /ego/goal -> /planning/pos_cmd`，也不需要 Goal Bridge。原 EGO 链只保留在 Git 历史中作为参考；若从历史版本恢复，不应与新 move_base/TEB 链同时启动。
 
 ## 9. 保护逻辑
 

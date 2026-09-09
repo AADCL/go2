@@ -238,7 +238,7 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 - real SDK bridge 启动后默认 disabled；必须先检查定位、地图和诊断，再手动 enable。
 - 电量低于 `25%` 时拒绝使能，步态测试建议充至 `40%` 以上。
 - 定位丢失或控制失效时目标会被取消；恢复后必须重新 enable 并发布新目标。
-- 不要并行启动旧工程和本工作空间，两套 TF、点云或 SDK publisher 会造成不可预测行为。
+- 若从 Git 历史恢复旧工程，不要与本工作空间并行启动；两套 TF、点云或 SDK publisher 会造成不可预测行为。
 - 不要在未核对固件控制模式时调用 MotionSwitcher、ClassicWalk 或其他模式切换接口。
 
 ## 文档导航
