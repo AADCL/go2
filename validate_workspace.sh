@@ -8,6 +8,12 @@ set -u
 
 command -v flock >/dev/null
 
+test -f \
+  "${WS_ROOT}/src/third_party/jsk_recognition_msgs/msg/PolygonArray.msg" || {
+  echo "Vendored jsk_recognition_msgs compatibility package is missing" >&2
+  exit 1
+}
+
 cmp -s \
   "${WS_ROOT}/src/third_party/livox_ros_driver2/package_ROS1.xml" \
   "${WS_ROOT}/src/third_party/livox_ros_driver2/package.xml" || {
