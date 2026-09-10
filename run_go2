@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-WS_ROOT="/home/nvidia/go2_nav_ws"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+WS_ROOT="$(dirname "${SCRIPT_PATH}")"
 MAP_SCHEMA_MARKER=".go2_terrain_mapping_v1"
 TERRAIN_METADATA="terrain_2p5d.yaml"
-GO2_INTERFACE="${GO2_INTERFACE:-eth0}"
-STACK_LOCK_FILE="/tmp/go2_nav_ws_nvidia.stack.lock"
+GO2_INTERFACE="${GO2_INTERFACE:-go2dds}"
+STACK_LOCK_FILE="/tmp/go2_nav_ws_unitree.stack.lock"
 source /opt/ros/noetic/setup.bash
 if [[ ! -f "${WS_ROOT}/devel/setup.bash" ]]; then
   echo "Workspace is not built. Run: ${WS_ROOT}/build_workspace.sh" >&2
@@ -465,7 +466,7 @@ Usage:
   run_go2 chassis-standing-test         # already standing; direct 0.3 m test
 
 Set RVIZ=true before mapping/navigation to start RViz.
-Set GO2_INTERFACE only if the GO2 DDS interface is not eth0.
+Set GO2_INTERFACE only if the GO2 DDS interface is not go2dds.
 USAGE
     ;;
 esac

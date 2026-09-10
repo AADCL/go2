@@ -3,7 +3,7 @@
   <arg name="map_root" default="$(env HOME)/go2_nav_ws/maps"/>
   <arg name="start_lidar" default="true"/>
   <arg name="use_real_sdk" default="false"/>
-  <arg name="network_interface" default="eth0"/>
+  <arg name="network_interface" default="go2dds"/>
   <arg name="terrain_enabled" default="false"/>
   <arg name="terrain_metadata" default=""/>
   <arg name="terrain_sensor_height" default="0.51"/>

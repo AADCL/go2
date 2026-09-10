@@ -36,6 +36,30 @@ if(NOT EXISTS "${UNITREE_SDK_ROOT}/include/unitree/robot/go2/sport/sport_client.
   message(FATAL_ERROR "Unitree SDK2 not found at ${UNITREE_SDK_ROOT}")
 endif()
 
+set(UNITREE_SDK_LIB_DIR
+  "${UNITREE_SDK_ROOT}/lib/${CMAKE_SYSTEM_PROCESSOR}")
+set(UNITREE_DDS_LIB_DIR
+  "${UNITREE_SDK_ROOT}/thirdparty/lib/${CMAKE_SYSTEM_PROCESSOR}")
+
+# Unitree's bundled CycloneDDS libraries use SONAMEs ending in .so.0.  Keep
+# the runtime bound to the matching vendored libraries on the Orin Nano.
+foreach(DDS_LIBRARY ddsc ddscxx)
+  set(DDS_LIBRARY_FILE "${UNITREE_DDS_LIB_DIR}/lib${DDS_LIBRARY}.so")
+  set(DDS_SONAME_LINK "${DDS_LIBRARY_FILE}.0")
+  if(NOT EXISTS "${DDS_LIBRARY_FILE}")
+    message(FATAL_ERROR "Bundled Unitree DDS library not found: ${DDS_LIBRARY_FILE}")
+  endif()
+  if(NOT EXISTS "${DDS_SONAME_LINK}")
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E create_symlink
+              "lib${DDS_LIBRARY}.so" "${DDS_SONAME_LINK}"
+      RESULT_VARIABLE DDS_LINK_RESULT)
+    if(NOT DDS_LINK_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to create ${DDS_SONAME_LINK}")
+    endif()
+  endif()
+endforeach()
+
 include_directories(
   ${catkin_INCLUDE_DIRS}
   ${UNITREE_SDK_ROOT}/include
@@ -54,9 +78,9 @@ add_executable(go2_sdk_bridge_real_node src/sdk_bridge.cpp)
 add_dependencies(go2_sdk_bridge_real_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(go2_sdk_bridge_real_node
   ${catkin_LIBRARIES}
-  ${UNITREE_SDK_ROOT}/lib/aarch64/libunitree_sdk2.a
-  ${UNITREE_SDK_ROOT}/thirdparty/lib/aarch64/libddscxx.so
-  ${UNITREE_SDK_ROOT}/thirdparty/lib/aarch64/libddsc.so
+  ${UNITREE_SDK_LIB_DIR}/libunitree_sdk2.a
+  ${UNITREE_DDS_LIB_DIR}/libddscxx.so
+  ${UNITREE_DDS_LIB_DIR}/libddsc.so
   pthread dl rt)
 
 add_executable(go2_sdk_official_motion_test_node
@@ -65,9 +89,9 @@ add_dependencies(go2_sdk_official_motion_test_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(go2_sdk_official_motion_test_node
   ${catkin_LIBRARIES}
-  ${UNITREE_SDK_ROOT}/lib/aarch64/libunitree_sdk2.a
-  ${UNITREE_SDK_ROOT}/thirdparty/lib/aarch64/libddscxx.so
-  ${UNITREE_SDK_ROOT}/thirdparty/lib/aarch64/libddsc.so
+  ${UNITREE_SDK_LIB_DIR}/libunitree_sdk2.a
+  ${UNITREE_DDS_LIB_DIR}/libddscxx.so
+  ${UNITREE_DDS_LIB_DIR}/libddsc.so
   pthread dl rt)
 
 install(TARGETS go2_velocity_shaper_node go2_sdk_bridge_mock_node

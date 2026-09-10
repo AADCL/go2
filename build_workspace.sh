@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
-WS_ROOT="/home/nvidia/go2_nav_ws"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+WS_ROOT="$(dirname "${SCRIPT_PATH}")"
 source /opt/ros/noetic/setup.bash
 set -u
 cd "${WS_ROOT}"
@@ -8,7 +9,7 @@ cd "${WS_ROOT}"
 available_kb="$(df -Pk "${WS_ROOT}" | awk 'NR == 2 {print $4}')"
 if [[ ! "${available_kb}" =~ ^[0-9]+$ ]] || (( available_kb < 5 * 1024 * 1024 )); then
   echo "Build refused: at least 5 GB free space is required in ${WS_ROOT}." >&2
-  echo "ROS logs are not deleted automatically; inspect /home/nvidia/.ros/log manually." >&2
+  echo "ROS logs are not deleted automatically; inspect ${HOME}/.ros/log manually." >&2
   exit 3
 fi
 
@@ -21,7 +22,7 @@ set -u
 rospack profile
 "${WS_ROOT}/validate_workspace.sh"
 
-USER_BIN="/home/nvidia/.local/bin"
+USER_BIN="${HOME}/.local/bin"
 USER_COMMAND="${USER_BIN}/run_go2"
 mkdir -p "${USER_BIN}"
 USER_COMMAND_TMP="${USER_COMMAND}.tmp.$$"
