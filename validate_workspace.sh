@@ -8,6 +8,13 @@ set -u
 
 command -v flock >/dev/null
 
+cmp -s \
+  "${WS_ROOT}/src/third_party/livox_ros_driver2/package_ROS1.xml" \
+  "${WS_ROOT}/src/third_party/livox_ros_driver2/package.xml" || {
+  echo "Livox ROS1 package.xml was not prepared before catkin discovery" >&2
+  exit 1
+}
+
 for package in go2_core go2_mapping go2_terrain go2_localization go2_navigation go2_control go2_bringup patchworkpp fast_lio livox_ros_driver2; do
   rospack find "${package}" >/dev/null
 done
