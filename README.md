@@ -15,9 +15,11 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) · [第三方版本](THIRD_PARTY.md)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [Robot 2 部署与验收](DEPLOYMENT_ROBOT2_V2.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) · [第三方版本](THIRD_PARTY.md)
 
 > V2.0.1 由 2026-09-09 机器狗 1 的已验证端侧状态生成，在 V2.0.0 功能快照上同步了最终地形门限的工作空间校验断言。七个自研包、五套固定版本第三方源码、旧版兼容地图和新 2.5D 地形地图均已纳入仓库；历史版本继续保留在 Git 提交历史中。
+
+Robot 2 的 Orin Nano 集成使用相同的 V2.0.1 算法，只覆盖第二条狗的工作空间路径、Mid-360 地址、DDS 接口和架构相关库路径；详见 [Robot 2 部署与验收](DEPLOYMENT_ROBOT2_V2.md)。
 
 ## 核心能力
 
