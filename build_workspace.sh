@@ -15,7 +15,18 @@ fi
 
 # Patchwork++ is intentionally built as a single online wrapper target. Its
 # vendored demos and embedded JSK source are retained but excluded by CMake.
-catkin_make -j1
+LIVOX_DRIVER_ROOT="${WS_ROOT}/src/third_party/livox_ros_driver2"
+LIVOX_ROS1_MANIFEST="${LIVOX_DRIVER_ROOT}/package_ROS1.xml"
+LIVOX_ACTIVE_MANIFEST="${LIVOX_DRIVER_ROOT}/package.xml"
+if [[ ! -f "${LIVOX_ROS1_MANIFEST}" ]]; then
+  echo "Livox ROS1 manifest is missing: ${LIVOX_ROS1_MANIFEST}" >&2
+  exit 5
+fi
+if ! cmp -s "${LIVOX_ROS1_MANIFEST}" "${LIVOX_ACTIVE_MANIFEST}"; then
+  install -m 0644 "${LIVOX_ROS1_MANIFEST}" "${LIVOX_ACTIVE_MANIFEST}"
+fi
+
+catkin_make -DROS_EDITION=ROS1 -DCATKIN_ENABLE_TESTING=ON -j1
 set +u
 source "${WS_ROOT}/devel/setup.bash"
 set -u
