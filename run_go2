@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-WS_ROOT="/home/nvidia/go2_nav_ws"
+WS_ROOT="${GO2_WS_ROOT:-/home/nvidia/go2_nav_ws}"
 MAP_SCHEMA_MARKER=".go2_terrain_mapping_v1"
 TERRAIN_METADATA="terrain_2p5d.yaml"
 GO2_INTERFACE="${GO2_INTERFACE:-eth0}"
@@ -218,11 +218,11 @@ case "${command_name}" in
       done
     fi
 
-    # The stable occupancy projection is authoritative for navigation. Terrain
-    # reconstruction may only add locally verified free/obstacle evidence and
-    # slope costs; it must never shrink this baseline map.
+    # Keep legacy export for old maps and as a geometry template for revision 2.
+    # Terrain maps classify obstacles relative to the reconstructed floor;
+    # copying legacy absolute-Z occupancy would turn ramps black again.
     if [[ "${terrain_export}" == true ]]; then
-      echo "Exporting stable 2D occupancy baseline before terrain layers."
+      echo "Preparing map geometry; revision 2 will reconstruct terrain and recover measured walls."
     else
       echo "Legacy map detected; exporting the original 2D occupancy map only."
     fi
@@ -232,7 +232,7 @@ case "${command_name}" in
     baseline_pgm=""
     baseline_yaml=""
     if [[ "${terrain_export}" == true ]]; then
-      # Keep the authoritative map set untouched until the terrain exporter
+      # Keep the committed map set untouched until the terrain exporter
       # has validated and committed every output. Hidden baseline files are
       # transaction-local inputs and are removed on every normal/error exit.
       baseline_pgm="$(map_dir)/.go2_occupancy_baseline_${legacy_export_id}.pgm"
@@ -280,7 +280,7 @@ case "${command_name}" in
           input_map_yaml:="${baseline_yaml}" \
           export_id:="${terrain_export_id}"; then
         echo "Terrain map exporter failed for export_id ${terrain_export_id}." >&2
-        echo "The previously committed map remains unchanged." >&2
+        echo "Inspect the error and any .go2_terrain_recovery_* directory before retrying." >&2
         exit 5
       fi
       # roslaunch may return zero after a required one-shot node exits with an
@@ -294,7 +294,7 @@ case "${command_name}" in
       fi
       rm -f -- "${baseline_pgm}" "${baseline_yaml}" "${legacy_export_receipt}"
       trap - EXIT
-      echo "Terrain map export validated without shrinking the occupancy baseline: $(map_dir)"
+      echo "Revision 2 terrain map, occupancy, quality report and checksums validated: $(map_dir)"
     fi
     ;;
   navigation)

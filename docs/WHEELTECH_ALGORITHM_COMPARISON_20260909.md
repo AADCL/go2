@@ -1,5 +1,7 @@
 # GO2 V2.0.0 与 WheelTech V5.1 算法对比
 
+本文保留 2026-09-09 的历史对比。V2.1.0 已适配 WheelTech 的离线分布式 PMF/鲁棒平面重建，当前实现与许可证边界见 [V2.1.0 发布说明](RELEASE_NOTES_V2.1.0.md) 和 [通用导出修复](TERRAIN_EXPORT_REVISION2_20260910.md)。
+
 ## 1. 对比基线
 
 - GO2：机器狗 1 `/home/nvidia/go2_nav_ws` 于 2026-09-09 验证通过的端侧状态。

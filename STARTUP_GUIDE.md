@@ -209,7 +209,7 @@ terrain_{elevation,slope,roughness,step}.f32
 terrain_{cost,confidence}.u8
 ```
 
-所有地图都会先使用 `src/go2_mapping/config/occupancy.yaml` 生成稳定二维占据图。新地图随后使用 `src/go2_terrain/config/terrain_export.yaml` 重建地形，并以二维图作为不可缩减的 known 基底：连续地面可纠正绝对 Z 投影造成的坡面伪障碍，轨迹补洞只能填 unknown，真实障碍最后覆盖；任何地形质量门或校验失败都会保留上一版正式地图。旧地图不会自动补生成地形层。完整资产、参数和校验规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
+无地形资料的旧地图继续使用 `src/go2_mapping/config/occupancy.yaml`。新地图先用该投影确定尺寸和原点，再按 `src/go2_terrain/config/terrain_export.yaml` 重建连续地面，统一生成 PGM 和六层地形资产；不会继承绝对 Z 投影中的坡面伪障碍。实测墙体和台阶覆盖自由证据，缺少可靠参考的区域保持未知。新增 `terrain_quality.yaml` 检查轨迹的地面、自由和起点连通比例；提交前校验失败保留上一版地图，正常提交 I/O 错误会回滚。已有 revision 1 地图仍可导航，不会自动重新导出。完整规则见 `TERRAIN_OPTIMIZATION_GUIDE.md` 和 `docs/TERRAIN_EXPORT_REVISION2_20260910.md`。
 
 ## 7. 第二次流程：重定位与自主导航
 

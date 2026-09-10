@@ -242,7 +242,30 @@ def validate(map_dir, expected_export_id=None):
     parameters = metadata.get("parameters")
     if not isinstance(parameters, dict):
         raise ValidationError("metadata.parameters is required")
-    for name, expected in LOCKED_PARAMETERS.items():
+    revision = parameters.get("reconstruction_revision", 1)
+    if revision not in (1, 2):
+        raise ValidationError("unsupported reconstruction_revision")
+    locked = dict(LOCKED_PARAMETERS)
+    if revision == 2:
+        for name in list(locked):
+            if name.startswith("minimum_") and name not in (
+                    "minimum_slope_cost", "minimum_lethal_cluster_cells"):
+                del locked[name]
+        del locked["maximum_reanchor_height_from_initial_m"]
+        locked["preserve_existing_map"] = 0.0
+        for name, minimum in (("minimum_trajectory_ground_ratio", 0.80),
+                              ("minimum_trajectory_free_ratio", 0.95),
+                              ("minimum_trajectory_reachable_ratio", 0.95)):
+            if not minimum <= require_number(parameters, name) <= 1:
+                raise ValidationError("invalid revision 2 quality limit: " + name)
+        quality = load_yaml(os.path.join(map_dir, "terrain_quality.yaml"))
+        if quality.get("reconstruction_revision") != 2:
+            raise ValidationError("quality report revision mismatch")
+        for metric in ("ground", "free", "reachable"):
+            name = "trajectory_{}_ratio".format(metric)
+            if not require_number(parameters, "minimum_" + name) <= require_number(quality, name) <= 1:
+                raise ValidationError("failed export quality metric: " + name)
+    for name, expected in locked.items():
         actual = require_number(parameters, name)
         if abs(actual - expected) > 1e-9:
             raise ValidationError(
@@ -305,6 +328,8 @@ def validate(map_dir, expected_export_id=None):
         mapping_snapshot_name,
     }
     cell_count = width * height
+    if revision == 2:
+        required_assets.add("terrain_quality.yaml")
     for layer_name, (expected_type, bytes_per_cell) in LAYER_TYPES.items():
         layer = layers.get(layer_name)
         if not isinstance(layer, dict):
@@ -360,6 +385,7 @@ def validate(map_dir, expected_export_id=None):
         "resolution": resolution,
         "base_to_floor_m": base_to_floor,
         "export_id": export_id,
+        "reconstruction_revision": revision,
         "checksums": len(checksums),
     }
 
@@ -379,7 +405,7 @@ def main():
         print(
             "terrain map valid: {width}x{height} @ {resolution:.3f} m, "
             "base-floor={base_to_floor_m:.3f} m, export-id={export_id}, "
-            "checksums={checksums}".format(**result)
+            "revision={reconstruction_revision}, checksums={checksums}".format(**result)
         )
     return 0
 

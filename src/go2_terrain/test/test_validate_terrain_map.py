@@ -60,6 +60,8 @@ class TerrainMapValidatorTest(unittest.TestCase):
             value[0] for value in self.layer_files.values()
         ]
         lines = []
+        if os.path.isfile(os.path.join(self.root, "terrain_quality.yaml")):
+            names.append("terrain_quality.yaml")
         for name in names:
             with open(os.path.join(self.root, name), "rb") as stream:
                 lines.append("{}  {}\n".format(hashlib.sha256(stream.read()).hexdigest(), name))
@@ -125,6 +127,39 @@ class TerrainMapValidatorTest(unittest.TestCase):
         self.assertEqual(result["width"], 2)
         self.assertEqual(result["height"], 2)
         self.assertEqual(result["export_id"], "test-export-001")
+
+    def _revision_two(self):
+        metadata = VALIDATOR.load_yaml(os.path.join(self.root, "terrain_2p5d.yaml"))
+        metadata["parameters"].update(reconstruction_revision=2, preserve_existing_map=0,
+            minimum_trajectory_ground_ratio=.8, minimum_trajectory_free_ratio=.95,
+            minimum_trajectory_reachable_ratio=.95)
+        self._write_yaml("terrain_2p5d.yaml", metadata)
+        self._write_yaml("terrain_quality.yaml", dict(reconstruction_revision=2,
+            trajectory_ground_ratio=1, trajectory_free_ratio=1, trajectory_reachable_ratio=1))
+        self._write_checksums()
+
+    def test_accepts_revision_two_and_preserves_legacy_validation(self):
+        self.assertEqual(VALIDATOR.validate(self.root)["reconstruction_revision"], 1)
+        self._revision_two()
+        self.assertEqual(VALIDATOR.validate(self.root)["reconstruction_revision"], 2)
+
+    def test_rejects_revision_two_unreachable_path(self):
+        self._revision_two()
+        quality = VALIDATOR.load_yaml(os.path.join(self.root, "terrain_quality.yaml"))
+        quality["trajectory_reachable_ratio"] = .3
+        self._write_yaml("terrain_quality.yaml", quality)
+        self._write_checksums()
+        with self.assertRaisesRegex(VALIDATOR.ValidationError, "quality metric"):
+            VALIDATOR.validate(self.root)
+
+    def test_rejects_unknown_reconstruction_revision(self):
+        self._revision_two()
+        metadata = VALIDATOR.load_yaml(os.path.join(self.root, "terrain_2p5d.yaml"))
+        metadata["parameters"]["reconstruction_revision"] = 3
+        self._write_yaml("terrain_2p5d.yaml", metadata)
+        self._write_checksums()
+        with self.assertRaisesRegex(VALIDATOR.ValidationError, "unsupported reconstruction"):
+            VALIDATOR.validate(self.root)
 
     def test_accepts_expected_export_id(self):
         result = VALIDATOR.validate(self.root, "test-export-001")

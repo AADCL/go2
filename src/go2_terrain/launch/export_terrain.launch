@@ -8,13 +8,6 @@
   <arg name="mapping_snapshot" default="$(arg map_dir)/mapping_snapshot.sha256"/>
   <arg name="input_map_yaml" default="$(arg map_dir)/map.yaml"/>
   <arg name="config" default="$(find go2_terrain)/config/terrain_export.yaml"/>
-  <arg name="preserve_existing_map" default="true"/>
-  <arg name="maximum_reanchor_height_from_initial_m" default="0.65"/>
-  <arg name="minimum_traced_trajectory_ratio" default="0.80"/>
-  <arg name="minimum_ground_observation_ratio" default="0.30"/>
-  <arg name="minimum_largest_ground_component_ratio" default="0.60"/>
-  <arg name="minimum_ground_to_baseline_free_ratio" default="0.08"/>
-  <arg name="minimum_trajectory_corridor_known_ratio" default="0.95"/>
 
   <node pkg="go2_terrain"
         type="go2_terrain_exporter_node"
@@ -28,19 +21,5 @@
     <param name="trajectory_pcd" value="$(arg trajectory_pcd)"/>
     <param name="mapping_snapshot" value="$(arg mapping_snapshot)"/>
     <param name="input_map_yaml" value="$(arg input_map_yaml)"/>
-    <param name="occupancy/preserve_existing_map"
-           value="$(arg preserve_existing_map)"/>
-    <param name="ground/max_reanchor_height_from_initial_m"
-           value="$(arg maximum_reanchor_height_from_initial_m)"/>
-    <param name="quality/minimum_traced_trajectory_ratio"
-           value="$(arg minimum_traced_trajectory_ratio)"/>
-    <param name="quality/minimum_ground_observation_ratio"
-           value="$(arg minimum_ground_observation_ratio)"/>
-    <param name="quality/minimum_largest_ground_component_ratio"
-           value="$(arg minimum_largest_ground_component_ratio)"/>
-    <param name="quality/minimum_ground_to_baseline_free_ratio"
-           value="$(arg minimum_ground_to_baseline_free_ratio)"/>
-    <param name="quality/minimum_trajectory_corridor_known_ratio"
-           value="$(arg minimum_trajectory_corridor_known_ratio)"/>
   </node>
 </launch>

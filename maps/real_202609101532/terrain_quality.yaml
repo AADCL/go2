@@ -1,0 +1,9 @@
+reconstruction_revision: 2
+ground_cells: 82025
+recovered_wall_cells: 128
+unresolved_vertical_cells: 140
+measured_step_cells: 58
+trajectory_points: 645
+trajectory_ground_ratio: 1
+trajectory_free_ratio: 1
+trajectory_reachable_ratio: 1

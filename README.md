@@ -7,7 +7,7 @@
 <p align="center">Livox Mid-360 · FAST-LIO · NDT-OMP · move_base/TEB · Unitree SDK2</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-2.0.1-1677ff">
+  <img alt="版本" src="https://img.shields.io/badge/version-2.1.0-1677ff">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
@@ -15,9 +15,9 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) · [第三方版本](THIRD_PARTY.md)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [通用导出修复](docs/TERRAIN_EXPORT_REVISION2_20260910.md) · [V2.1.0 发布说明](docs/RELEASE_NOTES_V2.1.0.md) · [第三方版本](THIRD_PARTY.md)
 
-> V2.0.1 由 2026-09-09 机器狗 1 的已验证端侧状态生成，在 V2.0.0 功能快照上同步了最终地形门限的工作空间校验断言。七个自研包、五套固定版本第三方源码、旧版兼容地图和新 2.5D 地形地图均已纳入仓库；历史版本继续保留在 Git 提交历史中。
+> V2.1.0 对应 2026-09-10 机器狗 1 的端侧状态。通用地形导出改为连续地面相对高度分类，修复上下坡被投影为障碍、墙边缺少地面时丢失墙线的问题，PGM 和六层地形资产统一生成。两张室外 `real_202609101532` / `real_202609101620` 地图已在原目录重新导出并校验；历史地图、提交及 `v2.0.0`、`v2.0.1` 标签保留。
 
 ## 核心能力
 
@@ -39,7 +39,7 @@
 Livox Mid-360 -> FAST-LIO -> timestamped 6DoF ray origin
                               -> Bayesian static/dynamic mapper
                               -> public_map.pcd + traversed_path_map.pcd
-                              -> atomic occupancy + terrain exporter
+                              -> validated occupancy + terrain exporter
                               -> map.pgm/yaml + terrain_2p5d assets
 ```
 
@@ -136,6 +136,7 @@ RVIZ=true run_go2 mapping lab01
 
 ```bash
 run_go2 save-map
+# 在建图终端按 Ctrl+C，等待保存并退出后再导出：
 run_go2 export-map lab01
 ```
 
@@ -247,6 +248,8 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 | --- | --- |
 | [STARTUP_GUIDE.md](STARTUP_GUIDE.md) | 建图、地图导出、重定位、导航、真机测试与故障排查 |
 | [TERRAIN_OPTIMIZATION_GUIDE.md](TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
+| [V2.1.0 发布说明](docs/RELEASE_NOTES_V2.1.0.md) | 通用坡面/墙体导出修复、回归结果与兼容范围 |
+| [通用导出修复](docs/TERRAIN_EXPORT_REVISION2_20260910.md) | revision 2 参数、质量检查、备份与回滚 |
 | [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |
 | [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) | 最终地形门限的工作空间校验补丁 |
 | [V2.0.0 发布说明](docs/RELEASE_NOTES_V2.0.0.md) | 本版本范围、验证状态、兼容与回滚说明 |
@@ -257,15 +260,17 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 ## 源码完整性
 
-本仓库是桌面 `go2_nav_ws` 完整工作空间的可复现源码版本，包含：
+本仓库保存机器狗 1 `go2_nav_ws` 的源码、配置和地图快照，包含：
 
 - 七个自研 ROS 功能包及其配置、launch、消息、插件和工具脚本；
 - `FAST_LIO`、`livox_ros_driver2`、`Livox-SDK2`、`Unitree_SDK2`、Patchwork++ 的固定快照；
-- 六组历史地图、`lab_202609081650` 兼容地图及最终验证地图 `lab_202609091725`；
+- 六组历史地图、`lab_202609081650` 兼容地图、室内地形地图及两张重新导出的室外 `real_20260910*` 地图；
 - 一键启动、构建、验证脚本和完整现场操作手册。
 
 为保持仓库可复现且干净，Catkin 生成目录 `build/`、`devel/`、运行日志、rosbag、临时暂存目录和本地备份未纳入版本控制。这些均为构建或运行产物，不属于项目源码。第三方快照的来源与记录修订见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
+历史地图按端侧原样保存，不代表均可直接导航：`lab_202609091010`、`lab_202609091450`、`lab_202609091625` 的旧地形门限与当前契约不符，使用前须重新导出并检查。已通过本次正式资产校验的是两张室外 revision 2 图及 `lab_202609091725` revision 1 图，详见发布说明。
+
 ---
 
-本项目由 AADCL 维护。各自研 ROS 包在 `package.xml` 中声明 BSD-3-Clause；第三方组件遵循各自许可证。
+本项目由 AADCL 维护。原有自研包声明 BSD-3-Clause；第三方组件遵循各自许可证。V2.1.0 离线表面重建包含 WheelTech 代码适配，其上游许可证字段尚为 `TODO`，不能将该部分笼统视为 BSD；具体来源与许可边界见 [THIRD_PARTY.md](THIRD_PARTY.md) 及 [地形包说明](src/go2_terrain/THIRD_PARTY.md)。

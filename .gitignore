@@ -3,6 +3,8 @@
 /devel/
 /install/
 /logs/
+/experiments/
+/backups/
 /.catkin_tools/
 
 # ROS runtime data
@@ -26,9 +28,14 @@ Thumbs.db
 
 # Local deployment artifacts
 *.tar.gz
+*.tgz
 *.zip
 
 # Desktop recovery metadata and pre-reorganization reference packages
 /_reference/
 /OFFLINE_SNAPSHOT_README.md
 /SHA256SUMS.csv
+
+# Interrupted export staging/recovery is local evidence, not release content.
+**/.go2_terrain_staging_*/
+**/.go2_terrain_recovery_*/

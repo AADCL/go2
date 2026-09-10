@@ -83,20 +83,35 @@ grep -q 'name="export_receipt" value="$(arg export_receipt)"' \
   "${WS_ROOT}/src/go2_mapping/launch/export_occupancy.launch"
 grep -q 'name="export_id" value="$(arg export_id)"' \
   "${WS_ROOT}/src/go2_terrain/launch/export_terrain.launch"
-grep -q 'preserve_existing_map: true' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_traced_trajectory_ratio: 0.80' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_ground_observation_ratio: 0.30' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_largest_ground_component_ratio: 0.60' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'max_reanchor_height_from_initial_m: 0.65' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_ground_to_baseline_free_ratio: 0.08' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_trajectory_corridor_known_ratio: 0.95' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
+python3 - "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = yaml.safe_load(stream)
+expected = {
+    "resolution": 0.05,
+    "minimum_ground_cells": 100,
+    "surface.max_ground_slope_deg": 35.0,
+    "surface.wall_min_inlier_ratio": 0.75,
+    "surface.wall_min_ground_cells": 8,
+    "occupancy.obstacle_inflation_m": 0.03,
+    "quality.minimum_trajectory_ground_ratio": 0.80,
+    "quality.minimum_trajectory_free_ratio": 0.95,
+    "quality.minimum_trajectory_reachable_ratio": 0.95,
+    "cost.flat_slope_deg": 8.0,
+    "cost.lethal_slope_deg": 30.0,
+    "cost.minimum_lethal_cluster_cells": 4,
+}
+for path, value in expected.items():
+    actual = config
+    for key in path.split("."):
+        actual = actual[key]
+    if actual != value:
+        raise SystemExit("Terrain default mismatch: %s=%r (expected %r)" %
+                         (path, actual, value))
+print("Revision 2 terrain export defaults validated.")
+PY
 grep -q 'verified_trajectory_free' \
   "${WS_ROOT}/src/go2_terrain/src/terrain_algorithms.cpp"
 for action_topic in goal cancel status feedback result; do
