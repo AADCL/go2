@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
-WS_ROOT="/home/nvidia/go2_nav_ws"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+WS_ROOT="$(dirname "${SCRIPT_PATH}")"
 source /opt/ros/noetic/setup.bash
 source "${WS_ROOT}/devel/setup.bash"
 set -u
@@ -26,10 +27,24 @@ grep -qx '/go2_navigation_patchworkpp' /tmp/go2_navigation_terrain_nodes.txt
 rosrun go2_terrain validate_terrain_map.py --help >/dev/null
 rosrun go2_terrain validate_terrain_map.py --help | \
   grep -q -- '--expected-export-id'
-grep -q 'network_interface" default="eth0"' \
+grep -q 'network_interface" default="go2dds"' \
   "${WS_ROOT}/src/go2_bringup/launch/navigation.launch"
-grep -q 'network_interface" default="eth0"' \
+grep -q 'network_interface" default="go2dds"' \
   "${WS_ROOT}/src/go2_control/launch/control.launch"
+grep -q 'WS_ROOT="$(dirname "${SCRIPT_PATH}")"' "${WS_ROOT}/run_go2"
+grep -q 'GO2_INTERFACE="${GO2_INTERFACE:-go2dds}"' "${WS_ROOT}/run_go2"
+grep -q 'livox_interface: eth0' \
+  "${WS_ROOT}/src/go2_core/config/robot.yaml"
+grep -q 'livox_host_ip: 192.168.1.50' \
+  "${WS_ROOT}/src/go2_core/config/robot.yaml"
+grep -q 'livox_device_ip: 192.168.1.168' \
+  "${WS_ROOT}/src/go2_core/config/robot.yaml"
+grep -q 'go2_interface: go2dds' \
+  "${WS_ROOT}/src/go2_core/config/robot.yaml"
+grep -q 'go2_host_ip: 192.168.123.18' \
+  "${WS_ROOT}/src/go2_core/config/robot.yaml"
+grep -q '"ip" : "192.168.1.168"' \
+  "${WS_ROOT}/src/third_party/livox_ros_driver2/config/MID360_config.json"
 grep -q 'inflation_radius: 0.10' \
   "${WS_ROOT}/src/go2_navigation/config/global_costmap.yaml"
 grep -q 'inflation_radius: 0.10' \
