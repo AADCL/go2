@@ -7,7 +7,7 @@
 <p align="center">Livox Mid-360 · FAST-LIO · NDT-OMP · move_base/TEB · Unitree SDK2</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-2.0.1-1677ff">
+  <img alt="版本" src="https://img.shields.io/badge/branch-unitree--orin--nano-1677ff">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
@@ -15,11 +15,11 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [Robot 2 部署与验收](DEPLOYMENT_ROBOT2_V2.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) · [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) · [第三方版本](THIRD_PARTY.md)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [全部文档](docs/README.md) · [经典步态与停车修复](docs/fixes/GAIT_TF_FIX_20260911.md) · [实时地形检查调整](docs/fixes/TERRAIN_RELAXED_CHECKS_20260911.md) · [第三方版本](THIRD_PARTY.md)
 
-> V2.0.1 由 2026-09-09 机器狗 1 的已验证端侧状态生成，在 V2.0.0 功能快照上同步了最终地形门限的工作空间校验断言。七个自研包、五套固定版本第三方源码、旧版兼容地图和新 2.5D 地形地图均已纳入仓库；历史版本继续保留在 Git 提交历史中。
+> 当前为 `unitree-orin-nano` 分支，运行代码基线是 `nano-tested-20260911`（`70f5cbe`），包含 Nano 适配、地图导出更新、步态/停车修复和实时地形检查调整。后续文档整理不改变这份运行代码；整理前的完整版本仍可通过该标签查看。
 
-Robot 2 的 Orin Nano 集成使用相同的 V2.0.1 算法，只覆盖第二条狗的工作空间路径、Mid-360 地址、DDS 接口和架构相关库路径；详见 [Robot 2 部署与验收](DEPLOYMENT_ROBOT2_V2.md)。
+第二条狗的日常操作从 [启动手册](STARTUP_GUIDE.md) 开始。`docs/deployment/` 和 `docs/releases/` 保留各次部署与发布时的状态，其中机器狗 1 的路径、参数和“尚未部署”说明是历史记录，不代表当前 Nano 配置。各阶段区别见 [文档索引](docs/README.md)。
 
 ## 核心能力
 
@@ -73,13 +73,22 @@ go2/
 │   ├── go2_terrain/       # 离线地形重建、全局坡度层和实时地面/障碍分类
 │   └── third_party/       # FAST-LIO、Livox、Unitree SDK2 与 Patchwork++
 ├── maps/<map_name>/       # 历史地图及当前 PCD/PGM/2.5D 验证地图
+├── tools/                # 诊断、回放与检查工具
+├── docs/                 # 文档索引、部署记录、修复说明和历史发布
+│   ├── deployment/       # 各机器人部署记录
+│   ├── fixes/            # 故障原因、修复和验证记录
+│   ├── guides/           # 专题使用与算法说明
+│   ├── releases/         # 历史版本说明
+│   ├── reference/        # 参考算法对比
+│   ├── assets/           # 文档图片
+│   └── superpowers/      # 历史设计与实施计划
 ├── run_go2                # 统一操作入口
 ├── build_workspace.sh     # 编译并执行静态检查
 ├── validate_workspace.sh  # package 与 launch 检查
 └── STARTUP_GUIDE.md       # 详细现场操作手册
 ```
 
-七个自研 ROS 包均位于 `src/`。重组前的重复功能包未发布到活动仓库，避免形成重复包、重复 TF 或重复 publisher；旧 `/home/nvidia/go2_mid360_nav` 工作树已退出运行链并在 V2.0.0 发布后清理，历史源码由 Git 提交保留。
+七个自研 ROS 包均位于 `src/`；第三方依赖集中在 `src/third_party/`。源码、地图和工具按原路径保留，部署与修复记录统一从 `docs/README.md` 查找。
 
 ## 环境要求
 
@@ -106,13 +115,13 @@ go2/
 工作空间默认部署路径为：
 
 ```text
-/home/nvidia/go2_nav_ws
+/home/unitree/go2_nav_ws
 ```
 
-完整仓库已包含 `src/third_party` 中记录的五个第三方源码快照。克隆后安装 ROS 依赖并编译：
+完整仓库已包含 `src/third_party` 中记录的算法、驱动和 SDK 源码快照，以及 JSK 兼容消息包。克隆后安装 ROS 依赖并编译：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 source /opt/ros/noetic/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 ./build_workspace.sh
@@ -239,7 +248,7 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 - 真机测试前保证周围环境安全，操作员能够立即遥控或执行 `run_go2 disable`。
 - real SDK bridge 启动后默认 disabled；必须先检查定位、地图和诊断，再手动 enable。
 - 电量低于 `25%` 时拒绝使能，步态测试建议充至 `40%` 以上。
-- 定位丢失或控制失效时目标会被取消；恢复后必须重新 enable 并发布新目标。
+- 定位丢失或控制失效时目标会被取消；恢复后先用 `run_go2 status` 检查状态，控制仍为 enabled 时无需重复 enable，但需要发布新目标。
 - 若从 Git 历史恢复旧工程，不要与本工作空间并行启动；两套 TF、点云或 SDK publisher 会造成不可预测行为。
 - 不要在未核对固件控制模式时调用 MotionSwitcher、ClassicWalk 或其他模式切换接口。
 
@@ -247,11 +256,12 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 | 文档 | 内容 |
 | --- | --- |
+| [全部文档与版本说明](docs/README.md) | 当前 Nano 入口、修复记录和历史文档分类 |
 | [STARTUP_GUIDE.md](STARTUP_GUIDE.md) | 建图、地图导出、重定位、导航、真机测试与故障排查 |
-| [TERRAIN_OPTIMIZATION_GUIDE.md](TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
-| [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |
-| [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) | 最终地形门限的工作空间校验补丁 |
-| [V2.0.0 发布说明](docs/RELEASE_NOTES_V2.0.0.md) | 本版本范围、验证状态、兼容与回滚说明 |
+| [TERRAIN_OPTIMIZATION_GUIDE.md](docs/guides/TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
+| [WheelTech 算法对比](docs/reference/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |
+| [V2.0.1 发布说明](docs/releases/RELEASE_NOTES_V2.0.1.md) | 最终地形门限的工作空间校验补丁 |
+| [V2.0.0 发布说明](docs/releases/RELEASE_NOTES_V2.0.0.md) | 本版本范围、验证状态、兼容与回滚说明 |
 | [THIRD_PARTY.md](THIRD_PARTY.md) | 第三方来源和记录修订版本 |
 | [go2_core/config](src/go2_core/config) | 机器人外参、frame 与网络配置 |
 | [go2_navigation/config](src/go2_navigation/config) | costmap、GlobalPlanner、TEB 和 move_base 参数 |
@@ -263,7 +273,7 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 
 - 七个自研 ROS 功能包及其配置、launch、消息、插件和工具脚本；
 - `FAST_LIO`、`livox_ros_driver2`、`Livox-SDK2`、`Unitree_SDK2`、Patchwork++ 的固定快照；
-- 六组历史地图、`lab_202609081650` 兼容地图及最终验证地图 `lab_202609091725`；
+- `maps/` 中的历史地图与验证地图，包括 Nano 测试使用的 `lab_202609101805`；
 - 一键启动、构建、验证脚本和完整现场操作手册。
 
 为保持仓库可复现且干净，Catkin 生成目录 `build/`、`devel/`、运行日志、rosbag、临时暂存目录和本地备份未纳入版本控制。这些均为构建或运行产物，不属于项目源码。第三方快照的来源与记录修订见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。

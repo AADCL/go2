@@ -60,6 +60,6 @@ FAST-LIO、动态建图、NDT、TF、外参、实时局部地形处理、GlobalP
 
 ## 来源与许可
 
-离线表面重建适配自 `AADCL/ugv` 提交 `ad23ac64cde045f26a6dcd5f80d899302ee0fa79` 的 `terrain_reclassify.cpp`，对应用户提供的 WheelTech PDF 路线一。上游包许可证字段为 `TODO`，该部分不能笼统归为原有 Go2 BSD 许可。来源、适配范围及独立 Patchwork++ GPL-3.0 边界见 [THIRD_PARTY.md](../THIRD_PARTY.md)。
+离线表面重建适配自 `AADCL/ugv` 提交 `ad23ac64cde045f26a6dcd5f80d899302ee0fa79` 的 `terrain_reclassify.cpp`，对应用户提供的 WheelTech PDF 路线一。上游包许可证字段为 `TODO`，该部分不能笼统归为原有 Go2 BSD 许可。来源、适配范围及独立 Patchwork++ GPL-3.0 边界见 [THIRD_PARTY.md](../../THIRD_PARTY.md)。
 
-详细参数、诊断、测试工具和部署备份见 [通用地形导出修复](TERRAIN_EXPORT_REVISION2_20260910.md)。
+详细参数、诊断、测试工具和部署备份见 [通用地形导出修复](../fixes/TERRAIN_EXPORT_REVISION2_20260910.md)。

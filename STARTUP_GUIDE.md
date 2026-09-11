@@ -1,12 +1,14 @@
 # GO2 Mid-360 建图与自主导航启动说明
 
-本文档对应端侧工作空间：
+本文档对应 `unitree-orin-nano` 分支的端侧工作空间；地图名可自行替换。部署与修复历史见 [文档索引](docs/README.md)。
+
+端侧工作空间：
 
 ```text
-/home/nvidia/go2_nav_ws
+/home/unitree/go2_nav_ws
 ```
 
-旧工程 `/home/nvidia/go2_mid360_nav` 已在 V2.0.0 发布并验证后从机器狗 1 清理；需要对照或回退时使用 Git 历史和 `v2.0.0` 标签。新工作空间采用一个 catkin 工作空间、七个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。动态建图、2.5D 地形导出和坡度规划的完整规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
+旧工程 `/home/nvidia/go2_mid360_nav` 已在 V2.0.0 发布并验证后从机器狗 1 清理；需要对照或回退时使用 Git 历史和 `v2.0.0` 标签。新工作空间采用一个 catkin 工作空间、七个自研功能包和一个 `third_party` 目录；正常操作不需要逐窗口手动 `source`，也不再需要依次打开十几个 ROS 节点窗口。动态建图、2.5D 地形导出和坡度规划的完整规则见 [地形优化说明](docs/guides/TERRAIN_OPTIMIZATION_GUIDE.md)。
 
 ## 1. 运行前安全要求
 
@@ -19,9 +21,7 @@
 5. 启动 FAST-LIO 时机器人必须静止，等待初始姿态归一化完成后再移动。
 6. 执行 `enable` 前，必须先用遥控器或 App 让 GO2 正常站立并确认四足可正常迈步。`enable` 只读确认本机固件正在使用 `mcf` 高层控制器，不调用 MotionSwitcher、`StandUp()`、`BalanceStand()`、`ClassicWalk()` 或 `FreeAvoid()`；现场对照测试已证明这些姿态/步态切换会使当前固件进入暂时不执行 `Move` 的状态。
 7. 电池 SOC 低于 25% 时 bridge 拒绝使能。步态测试建议充至至少 40%～50%，避免低电压影响动态表现。
-8. 地形地图导航还会从实时连通地面估计 MID360 到局部坡面的实际高度。标准工作姿态
-   应在 `0.43-0.59 m`；蹲伏时 `/terrain/healthy=false` 是正确保护，先用遥控器或 App
-   正常站立，不能放宽高度阈值强行使能。
+8. 地形地图导航会从实时地面估计 MID360 到局部坡面的高度。当前 Nano 测试配置的高度范围为 `0.35–0.59 m`，高度单项异常最多容忍 `0.25 s`；这是测试门槛，不是新的机械标定值。先让机器狗正常站立，异常时检查 `/terrain/status`；具体条件和验证范围见 [实时地形检查调整](docs/fixes/TERRAIN_RELAXED_CHECKS_20260911.md)。
 
 ## 2. 工程结构
 
@@ -65,8 +65,8 @@ go2_nav_ws/
 登录端侧：
 
 ```bash
-ssh nvidia@192.168.50.110
-cd /home/nvidia/go2_nav_ws
+ssh unitree@192.168.50.111
+cd /home/unitree/go2_nav_ws
 ```
 
 首次部署或修改源码后执行：
@@ -77,14 +77,14 @@ cd /home/nvidia/go2_nav_ws
 
 脚本会自动加载 ROS Noetic、以单任务方式编译以避免 Jetson 内存压力，并执行 package/launch 静态检查。编译成功后，日常启动不要再手动运行 `source /opt/ros/noetic/setup.bash` 或 `source devel/setup.bash`；`run_go2` 会自动处理。
 
-编译脚本还会在 `/home/nvidia/.local/bin/run_go2` 建立用户级命令入口。该目录已经位于 nvidia 用户的 `PATH` 中，因此在 `~/Desktop` 或其他任意目录应直接执行：
+编译脚本还会在 `/home/unitree/.local/bin/run_go2` 建立用户级命令入口。确认该目录位于 unitree 用户的 `PATH` 中后，在 `~/Desktop` 或其他任意目录可直接执行：
 
 ```bash
 run_go2 reset-navigation
 run_go2 status
 ```
 
-不要写成 `./run_go2`；前缀 `./` 的含义是“只在当前目录寻找这个文件”。只有当前目录正好是 `/home/nvidia/go2_nav_ws` 时，`./run_go2` 才成立。
+不要写成 `./run_go2`；前缀 `./` 的含义是“只在当前目录寻找这个文件”。只有当前目录正好是 `/home/unitree/go2_nav_ws` 时，`./run_go2` 才成立。
 
 `mapping` 和 `navigation` 启动前会检查 ROS master 中是否已有 LiDAR、FAST-LIO、TF、定位、move_base 或 real SDK bridge。发现旧工程或另一套 GO2 链仍在运行时会拒绝启动，并列出冲突节点；先回到原 launch 窗口按 `Ctrl+C`，确认冲突节点消失后再重试。该保护不会自动终止未知进程。
 
@@ -96,20 +96,20 @@ run_go2 status
 
 ## 5. 网络检查
 
-当前约定：
+当前 Nano 配置如下，雷达与底盘接口对应 `src/go2_core/config/robot.yaml`；管理地址沿用第二条狗部署记录，现场以实际地址为准：
 
 | 设备 | 端侧网卡 | 端侧 IP | 设备 IP |
 |---|---|---|---|
-| Livox Mid-360 | eth1 | 192.168.1.50 | 192.168.1.191 |
-| GO2 EDU | eth0 | 192.168.123.99 | GO2 默认 192.168.123.x 网段 |
-| 管理网络 | wlan0 | 192.168.50.110 | 操作电脑所在网段 |
+| Livox Mid-360 | eth0 | 192.168.1.50 | 192.168.1.168 |
+| GO2 EDU | go2dds | 192.168.123.18 | GO2 默认 192.168.123.x 网段 |
+| 管理网络 | 以 `ip -br addr` 为准 | 192.168.50.111 | 操作电脑所在网段 |
 
 检查：
 
 ```bash
 ip -br addr show eth0
-ip -br addr show eth1
-ping -c 3 192.168.1.191
+ip -br addr show go2dds
+ping -c 3 192.168.1.168
 ```
 
 如果网卡名发生变化，不要直接启用真机控制；先修改 `go2_core/config/robot.yaml` 以及导航启动时传给 SDK bridge 的网卡参数。
@@ -121,7 +121,7 @@ ping -c 3 192.168.1.191
 给地图取一个只包含字母、数字、下划线或短横线的名字，例如 `lab_20260901`：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 mapping lab_20260901
 ```
 
@@ -146,7 +146,7 @@ RVIZ=true run_go2 mapping lab_20260901
 另开一个终端只做短命令即可，不需要手动 source：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 status
 ```
 
@@ -174,27 +174,27 @@ rosrun tf tf_echo odom base_link
 保持建图主 launch 运行，在第二个终端执行：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 save-map
 ```
 
 应生成：
 
 ```text
-/home/nvidia/go2_nav_ws/maps/lab_20260901/public_map.pcd
-/home/nvidia/go2_nav_ws/maps/lab_20260901/traversed_path_map.pcd
+/home/unitree/go2_nav_ws/maps/lab_20260901/public_map.pcd
+/home/unitree/go2_nav_ws/maps/lab_20260901/traversed_path_map.pcd
 ```
 
 确认文件后，可在建图主终端按 `Ctrl-C` 正常退出：
 
 ```bash
-ls -lh /home/nvidia/go2_nav_ws/maps/lab_20260901/{public_map.pcd,traversed_path_map.pcd}
+ls -lh /home/unitree/go2_nav_ws/maps/lab_20260901/{public_map.pcd,traversed_path_map.pcd}
 ```
 
 ### 6.5 导出二维导航地图
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 export-map lab_20260901
 ```
 
@@ -209,14 +209,14 @@ terrain_{elevation,slope,roughness,step}.f32
 terrain_{cost,confidence}.u8
 ```
 
-所有地图都会先使用 `src/go2_mapping/config/occupancy.yaml` 生成稳定二维占据图。新地图随后使用 `src/go2_terrain/config/terrain_export.yaml` 重建地形，并以二维图作为不可缩减的 known 基底：连续地面可纠正绝对 Z 投影造成的坡面伪障碍，轨迹补洞只能填 unknown，真实障碍最后覆盖；任何地形质量门或校验失败都会保留上一版正式地图。旧地图不会自动补生成地形层。完整资产、参数和校验规则见 `TERRAIN_OPTIMIZATION_GUIDE.md`。
+所有地图都会先使用 `src/go2_mapping/config/occupancy.yaml` 生成稳定二维占据图。新地图随后使用 `src/go2_terrain/config/terrain_export.yaml` 重建地形，并以二维图作为不可缩减的 known 基底：连续地面可纠正绝对 Z 投影造成的坡面伪障碍，轨迹补洞只能填 unknown，真实障碍最后覆盖；任何地形质量门或校验失败都会保留上一版正式地图。旧地图不会自动补生成地形层。完整资产、参数和校验规则见 [地形优化说明](docs/guides/TERRAIN_OPTIMIZATION_GUIDE.md)。
 
 ## 7. 第二次流程：重定位与自主导航
 
 ### 7.1 强制先做 mock 验证
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 navigation lab_20260901
 ```
 
@@ -295,7 +295,7 @@ rostopic echo /cmd_vel_safe
 每次切换实车前、重新定位后或怀疑残留目标时执行：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 run_go2 reset-navigation
 ```
 
@@ -312,7 +312,7 @@ run_go2 reset-navigation
 结束 mock launch 后，以 real 模式重新启动：
 
 ```bash
-cd /home/nvidia/go2_nav_ws
+cd /home/unitree/go2_nav_ws
 RVIZ=true run_go2 navigation lab_202609021334 --real
 ```
 
@@ -442,14 +442,14 @@ rostopic hz /go2/state/low_state
 ### 找不到地图
 
 ```bash
-ls -lh /home/nvidia/go2_nav_ws/maps/<map_name>/
+ls -lh /home/unitree/go2_nav_ws/maps/<map_name>/
 ```
 
 定位需要 `public_map.pcd`，move_base 需要 `map.yaml` 和 `map.pgm`，三者地图名必须一致。
 
 ### 没有 `/livox/lidar`
 
-检查 eth1 地址、Mid-360 电源、设备 IP 和 `livox_ros_driver2` 配置。不要在同时运行旧、新两个 Livox driver 的情况下排查，否则会产生端口占用或重复 publisher。
+检查 eth0 地址、Mid-360 电源、设备 IP 和 `livox_ros_driver2` 配置。不要在同时运行旧、新两个 Livox driver 的情况下排查，否则会产生端口占用或重复 publisher。
 
 ### 没有 `/odom_nav`
 
@@ -479,7 +479,7 @@ rostopic echo -n 1 /terrain/status
 
 ### real bridge 无法连接 GO2
 
-检查 eth0 是否为 `192.168.123.99`、是否只启动一个 Unitree SDK2 bridge，以及机器人是否在正确工作模式。连接恢复前保持 disabled。
+检查 go2dds 是否为 `192.168.123.18`、是否只启动一个 Unitree SDK2 bridge，以及机器人是否在正确工作模式。连接恢复前保持 disabled。
 
 ### 机器人抽搐或速度突变
 

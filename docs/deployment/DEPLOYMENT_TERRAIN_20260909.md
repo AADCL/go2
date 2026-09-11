@@ -185,5 +185,5 @@ SHA256 a0de2bd32f1c0c166d9c4b66f8d25a2bfc3fe9478e2a81f483bac79988ba1412
 3. 在真实坡道采集新地图，复核天花板排除、坡面连续性和全局低坡优先规划。
 4. 只有现场确认环境安全后才执行 `run_go2 navigation <map> --real` 和手动 Enable。
 
-详细启动、导出、诊断和故障处理见 `TERRAIN_OPTIMIZATION_GUIDE.md` 与
-`STARTUP_GUIDE.md`。
+详细启动、导出、诊断和故障处理见 [地形优化说明](../guides/TERRAIN_OPTIMIZATION_GUIDE.md) 与
+[启动手册](../../STARTUP_GUIDE.md)。

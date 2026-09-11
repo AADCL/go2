@@ -178,8 +178,7 @@ samples only when at least 70% support one plane and at least 12 remain.
 The same spread, residual and physical-height limits apply. Consensus never
 prefers nominal standing height or adds ground cells; low posture remains
 invalid. Diagnostics distinguish `ground_plane_candidate_samples` from the
-samples retained in the fit. See `TERRAIN_HEIGHT_FIX_20260911.md` at the
-workspace root for Robot 2 replay evidence and remaining field validation.
+samples retained in the fit. See [Robot 2 ground-height fitting](../../docs/fixes/TERRAIN_HEIGHT_FIX_20260911.md) for Robot 2 replay evidence and remaining field validation.
 Sparse, fragmented, remote-only, one-sided, crouched, or abnormally elevated
 support therefore cannot arm navigation. Health also remains false until at
 least three valid frame-rate
