@@ -111,20 +111,35 @@ grep -q 'name="export_receipt" value="$(arg export_receipt)"' \
   "${WS_ROOT}/src/go2_mapping/launch/export_occupancy.launch"
 grep -q 'name="export_id" value="$(arg export_id)"' \
   "${WS_ROOT}/src/go2_terrain/launch/export_terrain.launch"
-grep -q 'preserve_existing_map: true' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_traced_trajectory_ratio: 0.80' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_ground_observation_ratio: 0.30' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_largest_ground_component_ratio: 0.60' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'max_reanchor_height_from_initial_m: 0.65' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_ground_to_baseline_free_ratio: 0.08' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
-grep -q 'minimum_trajectory_corridor_known_ratio: 0.95' \
-  "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml"
+python3 - "${WS_ROOT}/src/go2_terrain/config/terrain_export.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = yaml.safe_load(stream)
+expected = {
+    "resolution": 0.05,
+    "minimum_ground_cells": 100,
+    "surface.max_ground_slope_deg": 35.0,
+    "surface.wall_min_inlier_ratio": 0.75,
+    "surface.wall_min_ground_cells": 8,
+    "occupancy.obstacle_inflation_m": 0.03,
+    "quality.minimum_trajectory_ground_ratio": 0.80,
+    "quality.minimum_trajectory_free_ratio": 0.95,
+    "quality.minimum_trajectory_reachable_ratio": 0.95,
+    "cost.flat_slope_deg": 8.0,
+    "cost.lethal_slope_deg": 30.0,
+    "cost.minimum_lethal_cluster_cells": 4,
+}
+for path, value in expected.items():
+    actual = config
+    for key in path.split("."):
+        actual = actual[key]
+    if actual != value:
+        raise SystemExit("Terrain default mismatch: %s=%r (expected %r)" %
+                         (path, actual, value))
+print("Revision 2 terrain export defaults validated.")
+PY
 grep -q 'verified_trajectory_free' \
   "${WS_ROOT}/src/go2_terrain/src/terrain_algorithms.cpp"
 for action_topic in goal cancel status feedback result; do
@@ -155,7 +170,7 @@ grep -q 'steep_unknown_max_plane_rmse: 0.025' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'steep_unknown_max_point_residual: 0.05' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
-grep -q 'minimum_connected_ground_area_m2: 0.60' \
+grep -q 'minimum_connected_ground_area_m2: 0.40' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'minimum_near_support_area_m2: 0.18' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
@@ -175,20 +190,23 @@ grep -q 'ground_plane_max_rmse_m: 0.04' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'ground_plane_irls_iterations: 5' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
-grep -q 'open_after_consecutive_healthy_frames: 5' \
+grep -q 'open_after_consecutive_healthy_frames: 3' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
-grep -q 'max_soft_geometry_failure_frames: 3' \
+grep -q 'max_soft_geometry_failure_frames: 5' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
-grep -q 'max_soft_geometry_failure_duration_sec: 0.25' \
+grep -q 'max_soft_geometry_failure_duration_sec: 0.50' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
-grep -q 'min_sensor_height_m: 0.43' \
+grep -q 'min_sensor_height_m: 0.35' \
+  "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
+grep -q 'height_outlier_hold_sec: 0.25' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'max_sensor_height_m: 0.59' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 for diagnostic_key in ground_plane_fit_status ground_plane_samples \
   estimated_sensor_height_m ground_plane_slope_deg ground_plane_rmse_m \
   frame_health_class health_gate_open consecutive_healthy_frames \
-  consecutive_soft_geometry_failures soft_geometry_failure_age_sec; do
+  consecutive_soft_geometry_failures soft_geometry_failure_age_sec \
+  height_outlier_hold_sec height_outlier_held last_healthy_frame_age_sec; do
   grep -q "${diagnostic_key}" \
     "${WS_ROOT}/src/go2_terrain/src/terrain_guard.cpp"
 done

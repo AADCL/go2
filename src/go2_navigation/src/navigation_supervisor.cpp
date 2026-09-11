@@ -116,6 +116,22 @@ class NavigationSupervisor {
   }
 
   std::string notReadyReason() const {
+    std::string next_steps;
+    if (!localization_ok_) {
+      next_steps += " Check localization and the initial pose.";
+    }
+    if (!terrainReady()) {
+      next_steps += " Check /terrain/status and wait for terrain health to recover.";
+    }
+    if (!have_control_state_) {
+      next_steps += " Wait for SDK bridge control-state feedback.";
+    } else if (!control_enabled_) {
+      next_steps += " Run 'run_go2 enable' once the required checks are ready.";
+    }
+    if (!internal_server_connected_) {
+      next_steps += " Check the move_base process and action connection.";
+    }
+    next_steps += " Publish a fresh goal after navigation is ready.";
     return std::string("Navigation is not ready: localization_ok=") +
         (localization_ok_ ? "true" : "false") +
         ", control_enabled=" +
@@ -125,7 +141,7 @@ class NavigationSupervisor {
          (terrainReady() ? "true" : "false-or-stale")) +
         ", move_base_internal=" +
         (internal_server_connected_ ? "connected" : "disconnected") +
-        ". Run 'run_go2 enable' and publish a fresh goal.";
+        "." + next_steps;
   }
 
   void simpleGoalCallback(

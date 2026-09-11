@@ -144,17 +144,10 @@ wait_for_bool_topic() {
   local topic="$1"
   local expected="$2"
   local timeout_seconds="$3"
-  local deadline output value
-  deadline=$((SECONDS + timeout_seconds))
-  while (( SECONDS <= deadline )); do
-    output="$(timeout 1 rostopic echo -n 1 "${topic}" 2>/dev/null || true)"
-    value="$(awk '/^data:/ {print tolower($2); exit}' <<<"${output}")"
-    if [[ "${value}" == "${expected}" ]]; then
-      return 0
-    fi
-    sleep 0.10
-  done
-  return 1
+  # Keep one subscriber alive: Jetson Python/ROS startup can exceed one second.
+  timeout "$((timeout_seconds + 10))" python3 \
+    "${WS_ROOT}/tools/wait_for_bool_topic.py" \
+    "${topic}" "${expected}" "${timeout_seconds}"
 }
 
 acquire_stack_lock() {
@@ -219,11 +212,11 @@ case "${command_name}" in
       done
     fi
 
-    # The stable occupancy projection is authoritative for navigation. Terrain
-    # reconstruction may only add locally verified free/obstacle evidence and
-    # slope costs; it must never shrink this baseline map.
+    # Keep legacy export for old maps and as a geometry template for revision 2.
+    # Terrain maps classify obstacles relative to the reconstructed floor;
+    # copying legacy absolute-Z occupancy would turn ramps black again.
     if [[ "${terrain_export}" == true ]]; then
-      echo "Exporting stable 2D occupancy baseline before terrain layers."
+      echo "Preparing map geometry; revision 2 will reconstruct terrain and recover measured walls."
     else
       echo "Legacy map detected; exporting the original 2D occupancy map only."
     fi
@@ -233,7 +226,7 @@ case "${command_name}" in
     baseline_pgm=""
     baseline_yaml=""
     if [[ "${terrain_export}" == true ]]; then
-      # Keep the authoritative map set untouched until the terrain exporter
+      # Keep the committed map set untouched until the terrain exporter
       # has validated and committed every output. Hidden baseline files are
       # transaction-local inputs and are removed on every normal/error exit.
       baseline_pgm="$(map_dir)/.go2_occupancy_baseline_${legacy_export_id}.pgm"
@@ -281,7 +274,7 @@ case "${command_name}" in
           input_map_yaml:="${baseline_yaml}" \
           export_id:="${terrain_export_id}"; then
         echo "Terrain map exporter failed for export_id ${terrain_export_id}." >&2
-        echo "The previously committed map remains unchanged." >&2
+        echo "Inspect the error and any .go2_terrain_recovery_* directory before retrying." >&2
         exit 5
       fi
       # roslaunch may return zero after a required one-shot node exits with an
@@ -295,7 +288,7 @@ case "${command_name}" in
       fi
       rm -f -- "${baseline_pgm}" "${baseline_yaml}" "${legacy_export_receipt}"
       trap - EXIT
-      echo "Terrain map export validated without shrinking the occupancy baseline: $(map_dir)"
+      echo "Revision 2 terrain map, occupancy, quality report and checksums validated: $(map_dir)"
     fi
     ;;
   navigation)
@@ -314,6 +307,7 @@ case "${command_name}" in
       terrain_enabled:="$([[ "${terrain_mode}" == terrain ]] && echo true || echo false)" \
       terrain_metadata:="$(map_dir)/${TERRAIN_METADATA}" \
       use_real_sdk:="${use_real}" network_interface:="${GO2_INTERFACE}" \
+      gait_policy:="${GO2_GAIT_POLICY:-preserve_current}" \
       rviz:="${RVIZ:-false}"
     ;;
   enable)
@@ -350,9 +344,9 @@ case "${command_name}" in
       exit 4
     fi
     if ! wait_for_bool_topic /navigation/ready true 5; then
-      echo "Control was enabled, but the complete navigation safety gate is not ready; disarming." >&2
-      best_effort_disarm
-      exit 4
+      echo "Control enabled; navigation is waiting for localization, terrain, or move_base."
+      echo "Motion remains gated. When ready, publish a fresh goal; enable is not required again."
+      exit 0
     fi
     echo "Control enabled. Publish a fresh 2D Nav Goal; old goals are not resumed."
     ;;

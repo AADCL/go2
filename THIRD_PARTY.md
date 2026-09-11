@@ -14,10 +14,19 @@ present in `/home/nvidia/go2_mid360_nav/src` on 2026-09-01.
 The dynamic Bayesian mapping, offline terrain reconstruction, and global
 terrain-layer architecture use AADCL/ugv WheelTech V5.1 at commit
 `4a240019f3776e82f0de1b55029339d056e03bcc` as a behavioral and architectural
-reference. The GO2 implementations in `go2_mapping` and `go2_terrain` were
-written for this workspace; no WheelTech source file, chassis integration,
-TF tree, recovery behavior, or bringup package is copied into this tree.
-Those GO2 packages carry their own package-level BSD-3-Clause license notice.
+reference for V2.0.x. The pre-existing GO2 code carries its package-level
+BSD-3-Clause license notice.
+
+V2.1.0 additionally adapts offline distributed PMF and robust plane surface
+reconstruction from `AADCL/ugv` commit
+`ad23ac64cde045f26a6dcd5f80d899302ee0fa79`, file
+`WheelTech/wheeltec_stack/wheeltec_map_tools/src/terrain_reclassify.cpp`.
+The adapted implementation is `src/go2_terrain/src/offline_surface.cpp`.
+The upstream manifest at this revision declares its license as `TODO`;
+the existing BSD notice does not establish a license for that upstream
+material. See [the detailed provenance](src/go2_terrain/THIRD_PARTY.md).
+No WheelTech chassis integration, TF tree, recovery behavior or bringup
+package is imported.
 
 Patchwork++ remains an independent ROS package under its upstream GPL-3.0
 license. Robot-specific frame conversion, queueing, health checks, and local

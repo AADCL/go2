@@ -313,7 +313,7 @@ run_go2 reset-navigation
 
 ```bash
 cd /home/nvidia/go2_nav_ws
-run_go2 navigation lab_202609021334 --real
+RVIZ=true run_go2 navigation lab_202609021334 --real
 ```
 
 注意：SDK bridge 启动后默认 disabled。它会立即发布底盘状态，但不会在启动时切换运动模式，也不会让机器人动作。重新完成初始位姿和定位检查，然后按顺序执行：

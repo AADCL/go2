@@ -6,8 +6,10 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <mutex>
 
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 #include <tf/tf.h>
 #include <tf_conversions/tf_eigen.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -127,6 +129,7 @@ class Localizer
 public:
     explicit Localizer(ros::NodeHandle &nh) :
             _nh(nh),
+            _tfSpinner(1, &_tfQueue),
             _cfg(nh),
             _mapPtr(new Cloud),
             _mapFilteredPtr(new Cloud)
@@ -202,13 +205,22 @@ public:
 
         _odomMap.setIdentity();
         _lastMatchOdom.setIdentity();
-        _tfTimer = _nh.createTimer(
-                ros::Duration(0.10),
-                &Localizer::tfTimerCallback,
-                this
-        );
+        // NDT alignment runs on the main queue and may take longer than the
+        // TF postdate horizon. Publish the cached correction independently.
+        ros::TimerOptions tfOptions(
+                ros::Duration(0.05),
+                boost::bind(&Localizer::tfTimerCallback, this, _1),
+                &_tfQueue);
+        _tfTimer = _nh.createTimer(tfOptions);
         publishHealth(false);
         ROS_WARN("Publishing provisional identity map->odom until an initial NDT pose is accepted");
+        _tfSpinner.start();
+    }
+
+    ~Localizer()
+    {
+        _tfTimer.stop();
+        _tfSpinner.stop();
     }
 
 private:
@@ -224,6 +236,9 @@ private:
     ros::Publisher _rotationJumpPub;
 
     tf2_ros::TransformBroadcaster _br;
+    ros::CallbackQueue _tfQueue;
+    ros::AsyncSpinner _tfSpinner;
+    std::mutex _tfMutex;
     ros::Timer _tfTimer;
 
     message_filters::Subscriber<sensor_msgs::PointCloud2> *_pcSubPtr;
@@ -305,9 +320,10 @@ private:
                 )
         );
 
-        _odomMap =
-                baseMap *
-                _baseOdom.inverse();
+        {
+            std::lock_guard<std::mutex> lock(_tfMutex);
+            _odomMap = baseMap * _baseOdom.inverse();
+        }
 
         ROS_INFO("Initial pose set");
     }
@@ -602,7 +618,10 @@ private:
             return false;
         }
 
-        _odomMap = candidateOdomMap;
+        {
+            std::lock_guard<std::mutex> lock(_tfMutex);
+            _odomMap = candidateOdomMap;
+        }
         std_msgs::Float64 translation_jump;
         translation_jump.data = correctionShift;
         _translationJumpPub.publish(translation_jump);
@@ -658,16 +677,13 @@ private:
 
     void publishTF()
     {
+        // Serialize both correction snapshots and sends: the NDT queue also
+        // publishes after a successful match. Never hold this lock in align().
+        std::lock_guard<std::mutex> lock(_tfMutex);
         geometry_msgs::TransformStamped tfMsg;
 
-        // 关键修改：
-        //
-        // map -> odom 向未来预发布 0.25 秒，
-        // 避免 TEB 查询当前时刻 TF 时，
-        // 最新 map -> odom 尚落后几十毫秒而出现：
-        //
-        // Lookup would require extrapolation into the future
-        //
+        // This is the last accepted map->odom correction, not a prediction of
+        // base motion. Localization health/timeout gates remain independent.
         tfMsg.header.stamp =
                 ros::Time::now() +
                 ros::Duration(

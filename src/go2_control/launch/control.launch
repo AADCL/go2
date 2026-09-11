@@ -1,5 +1,6 @@
 <launch>
   <arg name="use_real_sdk" default="false"/>
+  <arg name="gait_policy" default="preserve_current"/>
   <arg name="network_interface" default="go2dds"/>
   <arg name="require_terrain_health" default="false"/>
   <arg name="terrain_health_timeout_sec" default="0.75"/>
@@ -31,6 +32,7 @@
       <!-- Unitree's official GO2 SportClient example refreshes Move at 200 Hz. -->
       <param name="control_rate_hz" value="200.0"/>
       <param name="gait_mode" value="direct_mcf"/>
+      <param name="gait_policy" value="$(arg gait_policy)"/>
       <param name="allow_motion_mode_switch" value="false"/>
       <param name="motion_mode_selector" value=""/>
       <param name="required_motion_mode" value="mcf"/>

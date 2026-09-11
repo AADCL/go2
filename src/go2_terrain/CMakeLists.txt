@@ -42,9 +42,13 @@ include_directories(
 add_definitions(${PCL_DEFINITIONS})
 
 add_library(go2_terrain_core
+  src/offline_surface.cpp
+  src/export_transaction.cpp
   src/terrain_algorithms.cpp
   src/terrain_grid.cpp)
 target_link_libraries(go2_terrain_core
+  ${PCL_LIBRARIES}
+  ${Boost_LIBRARIES}
   ${catkin_LIBRARIES}
   yaml-cpp)
 
@@ -78,6 +82,11 @@ target_link_libraries(go2_terrain_guard_node
   ${PCL_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(go2_offline_surface_test
+    test/test_offline_surface.cpp test/gtest_main.cpp)
+  if(TARGET go2_offline_surface_test)
+    target_link_libraries(go2_offline_surface_test go2_terrain_core ${PCL_LIBRARIES} ${Boost_LIBRARIES})
+  endif()
   catkin_add_gtest(go2_terrain_model_test
     test/terrain_model_test.cpp
     test/gtest_main.cpp)
@@ -112,5 +121,5 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
-install(FILES costmap_plugins.xml LICENSE README.md
+install(FILES costmap_plugins.xml LICENSE README.md THIRD_PARTY.md
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

@@ -179,6 +179,7 @@ class TerrainGuard {
                ground_plane_fit_.minimum_sensor_height_m, 0.43);
     pnh_.param("health/max_sensor_height_m",
                ground_plane_fit_.maximum_sensor_height_m, 0.59);
+    pnh_.param("health/height_outlier_hold_sec", height_outlier_hold_sec_, 0.0);
     pnh_.param("health/open_after_consecutive_healthy_frames",
                health_hysteresis_parameters_.opening_healthy_frames, 5);
     pnh_.param("health/max_soft_geometry_failure_frames",
@@ -242,6 +243,8 @@ class TerrainGuard {
         ground_plane_fit_.minimum_sensor_height_m <= 0.0 ||
         ground_plane_fit_.maximum_sensor_height_m <
             ground_plane_fit_.minimum_sensor_height_m ||
+        !std::isfinite(height_outlier_hold_sec_) ||
+        height_outlier_hold_sec_ < 0.0 || height_outlier_hold_sec_ > 0.30 ||
         health_hysteresis_parameters_.opening_healthy_frames < 1 ||
         health_hysteresis_parameters_.maximum_soft_failure_frames < 0 ||
         health_hysteresis_parameters_.maximum_soft_failure_duration_sec <
@@ -325,19 +328,21 @@ class TerrainGuard {
         !health_hysteresis_state_.gate_open) {
       return;
     }
+    const ros::WallTime deadline_now = ros::WallTime::now();
     const double age = go2_terrain::terrainSoftFailureAgeSec(
-        health_hysteresis_state_, now.toSec());
-    const double remaining =
+        health_hysteresis_state_, deadline_now.toSec());
+    double remaining =
         health_hysteresis_parameters_.maximum_soft_failure_duration_sec - age;
+    if (height_outlier_held_) {
+      remaining = std::min(remaining, height_outlier_hold_sec_ -
+          (deadline_now - last_healthy_frame_wall_).toSec());
+    }
     if (remaining <= 0.0) {
-      go2_terrain::enforceTerrainHealthHysteresisDeadline(
-          now.toSec(), health_hysteresis_parameters_,
-          &health_hysteresis_state_);
+      go2_terrain::forceTerrainHealthGateClosed(&health_hysteresis_state_);
       return;
     }
-    // The deadline is measured from the first consecutive soft failure. A
-    // later soft frame reschedules only the remaining duration and can never
-    // extend the allowance.
+    // Use the earlier of the geometry deadline and the height-only deadline.
+    // Later soft frames cannot extend either allowance, even if input stops.
     soft_failure_deadline_timer_ = nh_.createWallTimer(
         ros::WallDuration(remaining),
         &TerrainGuard::softFailureDeadlineCallback, this, true, true);
@@ -380,6 +385,7 @@ class TerrainGuard {
       low_rate_since_ = ros::WallTime();
     }
     last_input_wall_ = start;
+    height_outlier_held_ = false;
     if (ground_message->header.frame_id != expected_frame_ ||
         nonground_message->header.frame_id != expected_frame_ ||
         ground_message->header.stamp.isZero()) {
@@ -605,6 +611,24 @@ class TerrainGuard {
         enough_input_points, enough_ground_points, enough_connected_area,
         enough_near_support, enough_sector_coverage, last_ground_plane_,
         processing_within_deadline);
+    if (frame_health_class_ == go2_terrain::TerrainFrameHealthClass::kHealthy) {
+      last_healthy_frame_wall_ = start;
+    } else {
+      const double healthy_age = last_healthy_frame_wall_.isZero()
+          ? std::numeric_limits<double>::infinity()
+          : (ros::WallTime::now() - last_healthy_frame_wall_).toSec();
+      const bool current_evidence_good = enough_input_points &&
+          enough_ground_points && enough_connected_area && enough_near_support &&
+          enough_sector_coverage && processing_within_deadline;
+      height_outlier_held_ = go2_terrain::canHoldTerrainHeightOutlier(
+          last_ground_plane_, current_evidence_good,
+          health_hysteresis_state_.gate_open, healthy_age,
+          height_outlier_hold_sec_);
+      if (height_outlier_held_) {
+        frame_health_class_ =
+            go2_terrain::TerrainFrameHealthClass::kSoftGeometryFailure;
+      }
+    }
     frame_healthy_ =
         frame_health_class_ == go2_terrain::TerrainFrameHealthClass::kHealthy;
     updateFrameHealthGate(start);
@@ -697,6 +721,14 @@ class TerrainGuard {
     go2_terrain::enforceTerrainHealthHysteresisDeadline(
         now.toSec(), health_hysteresis_parameters_,
         &health_hysteresis_state_);
+    const double healthy_age = last_healthy_frame_wall_.isZero()
+        ? std::numeric_limits<double>::infinity()
+        : (now - last_healthy_frame_wall_).toSec();
+    if (height_outlier_held_ && !go2_terrain::canHoldTerrainHeightOutlier(
+            last_ground_plane_, true, health_hysteresis_state_.gate_open,
+            healthy_age, height_outlier_hold_sec_)) {
+      go2_terrain::forceTerrainHealthGateClosed(&health_hysteresis_state_);
+    }
     if (stale || !rate_healthy) {
       // Missing input and insufficient output rate are hard failures. They
       // must not consume the geometry-only hold allowance.
@@ -755,6 +787,12 @@ class TerrainGuard {
       status.message = frame_reason_;
     }
     status.values.push_back(keyValue("expected_frame", expected_frame_));
+    status.values.push_back(keyValue("height_outlier_hold_sec",
+                                    asString(height_outlier_hold_sec_)));
+    status.values.push_back(keyValue("height_outlier_held",
+                                    healthy && height_outlier_held_ ? "true" : "false"));
+    status.values.push_back(keyValue("last_healthy_frame_age_sec",
+                                    asString(healthy_age)));
     status.values.push_back(keyValue("input_age_sec", asString(input_age)));
     status.values.push_back(
         keyValue("input_points", asString(last_input_points_)));
@@ -775,6 +813,9 @@ class TerrainGuard {
         go2_terrain::groundPlaneFitStatusName(last_ground_plane_.status)));
     status.values.push_back(keyValue(
         "ground_plane_samples", asString(last_ground_plane_.sample_count)));
+    status.values.push_back(keyValue(
+        "ground_plane_candidate_samples",
+        asString(last_ground_plane_.candidate_sample_count)));
     status.values.push_back(keyValue(
         "ground_plane_maximum_radius_m",
         asString(ground_plane_fit_.maximum_radius_m)));
@@ -886,10 +927,13 @@ class TerrainGuard {
   int min_rate_samples_ = 3;
   double startup_grace_sec_ = 3.0;
   double low_rate_hold_sec_ = 1.0;
+  double height_outlier_hold_sec_ = 0.0;
+  bool height_outlier_held_ = false;
   int width_ = 0;
   int height_ = 0;
 
   ros::WallTime last_input_wall_;
+  ros::WallTime last_healthy_frame_wall_;
   ros::WallTime last_frame_wall_;
   ros::WallTime low_rate_since_;
   ros::WallTime start_wall_;

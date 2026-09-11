@@ -254,6 +254,36 @@ TEST(TerrainModel, RejectsLowStanceFromMeasuredSensorHeight) {
   EXPECT_NEAR(0.31, estimate.sensor_height_m, 1e-6);
 }
 
+TEST(TerrainModel, MajorityPlaneResistsClusteredNonfloorReturns) {
+  const auto geometry = coverageGeometry();
+  const auto mask = annularGroundMask(geometry);
+  for (double height : {0.24, 0.48}) {
+    for (double slope : {0.0, 20.0}) {
+      auto candidates = planarCandidateHeights(geometry, mask, height, slope);
+      // A coherent raised cluster pulls ordinary least-squares/Huber fits
+      // towards a false slope. It is not random isolated measurement noise.
+      for (int y = 0; y < geometry.height; ++y) {
+        for (int x = 0; x < 7; ++x) {
+          const auto i = coverageIndex(x, y, geometry);
+          if (mask[i]) candidates[i] += 0.15F;
+        }
+      }
+      const auto estimate = gt::estimateConnectedGroundPlane(
+          candidates, mask, geometry, gt::GroundPlaneFitParameters());
+      EXPECT_NEAR(height, estimate.sensor_height_m, 1e-5);
+      EXPECT_NEAR(slope, estimate.slope_deg, 1e-4);
+      EXPECT_LT(estimate.sample_count, estimate.candidate_sample_count);
+      if (height < 0.43) {
+        EXPECT_FALSE(estimate.valid);
+        EXPECT_EQ(gt::GroundPlaneFitStatus::kSensorHeightBelowMinimum,
+                  estimate.status);
+      } else {
+        EXPECT_TRUE(estimate.valid);
+      }
+    }
+  }
+}
+
 TEST(TerrainModel, LowStanceReachesPhysicalHeightGateEndToEnd) {
   gt::GroundConnectivityParameters geometry = coverageGeometry();
   geometry.sensor_height = 0.51;
@@ -468,6 +498,73 @@ TEST(TerrainModel, FrameHealthClassificationNeverSoftensSafetyFailures) {
   EXPECT_EQ(gt::TerrainFrameHealthClass::kHardFailure,
             gt::classifyTerrainFrameHealth(
                 true, false, false, false, false, plane, false));
+}
+
+TEST(TerrainModel, HeightOutlierHoldRequiresRecentHealthyOpenGate) {
+  gt::GroundPlaneEstimate plane;
+  plane.valid = false;
+  plane.status = gt::GroundPlaneFitStatus::kSensorHeightBelowMinimum;
+  plane.sensor_height_m = 0.21;
+  plane.rmse_m = 0.03;
+  EXPECT_TRUE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.10, 0.25));
+  EXPECT_TRUE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.249, 0.25));
+  // Timer deadline is relative to the last fully healthy frame, not each miss.
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.25, 0.25));
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.30, 0.25));
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, false, 0.10, 0.25));
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.10, 0.0));
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, -0.1, 0.25));
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(
+      plane, true, true, std::numeric_limits<double>::infinity(), 0.25));
+  // Missing points, coverage, or processing deadline cannot borrow this hold.
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, false, true, 0.10, 0.25));
+}
+
+TEST(TerrainModel, HeightOutlierHoldRejectsInvalidFitsAndNumbers) {
+  gt::GroundPlaneEstimate plane;
+  plane.sensor_height_m = 0.21;
+  plane.rmse_m = 0.03;
+  plane.valid = false;
+  for (const auto status : {gt::GroundPlaneFitStatus::kFitFailure,
+                            gt::GroundPlaneFitStatus::kExcessiveResidual,
+                            gt::GroundPlaneFitStatus::kDegenerateGeometry,
+                            gt::GroundPlaneFitStatus::kInsufficientConnectedSamples}) {
+    plane.status = status;
+    EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.10, 0.25));
+  }
+  plane.status = gt::GroundPlaneFitStatus::kSensorHeightBelowMinimum;
+  plane.sensor_height_m = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.10, 0.25));
+  plane.sensor_height_m = 0.21;
+  plane.rmse_m = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(gt::canHoldTerrainHeightOutlier(plane, true, true, 0.10, 0.25));
+}
+
+TEST(TerrainModel, SustainedHeightOutliersCloseGateAndCannotReopenIt) {
+  gt::GroundPlaneEstimate plane;
+  plane.valid = false;
+  plane.status = gt::GroundPlaneFitStatus::kSensorHeightBelowMinimum;
+  plane.sensor_height_m = 0.24;
+  plane.rmse_m = 0.01;
+  gt::TerrainHealthHysteresisParameters parameters;
+  parameters.opening_healthy_frames = 3;
+  parameters.maximum_soft_failure_frames = 5;
+  parameters.maximum_soft_failure_duration_sec = 0.50;
+  gt::TerrainHealthHysteresisState state;
+  for (int i = 0; i < 3; ++i)
+    gt::updateTerrainHealthHysteresis(gt::TerrainFrameHealthClass::kHealthy,
+                                    i * 0.1, parameters, &state);
+  ASSERT_TRUE(state.gate_open);
+  for (int i = 1; i <= 10; ++i) {
+    const double age = i * 0.1;
+    const bool hold = gt::canHoldTerrainHeightOutlier(
+        plane, true, state.gate_open, age, 0.25);
+    const auto classification = hold ? gt::TerrainFrameHealthClass::kSoftGeometryFailure
+                                    : gt::TerrainFrameHealthClass::kHardFailure;
+    gt::updateTerrainHealthHysteresis(classification, 0.2 + age,
+                                    parameters, &state);
+    EXPECT_EQ(i < 3, state.gate_open);
+  }
 }
 
 TEST(TerrainModel, GravityAlignmentPreservesYawOnly) {

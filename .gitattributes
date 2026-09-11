@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.pcd binary
+*.pgm binary
+*.ppm binary
+*.f32 binary
+*.u8 binary
+
+# Exported assets include checksummed text files: preserve their exact bytes.
+maps/** -text

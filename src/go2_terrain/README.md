@@ -1,91 +1,110 @@
 # GO2 terrain integration
 
-This package separates terrain handling into two independent paths:
+Offline conversion produces occupancy and global slope costs. The runtime local
+costmap continues to use ordinary obstacles only, without local slope costs.
 
-- Offline/global terrain products are loaded by the global costmap.
-- Live local navigation uses only ground-relative obstacle filtering. It does
-  not add local slope, step, or roughness costs.
+## Production offline export, reconstruction revision 2
 
-## Offline export and global cost
-
-`export_terrain.launch` consumes `public_map.pcd` and
-`traversed_path_map.pcd` plus a complete legacy `map.yaml`/PGM generated in a
-hidden staging directory. Its exact geometry is retained. The production
-profile refuses export without this occupancy baseline. The exporter estimates
-base-to-floor height from the path start and fails unless the result is within
-0.20-0.55 m.
-
-When an input map is supplied, its PGM is retained as the occupancy baseline
-inside the same staged transaction. Verified continuous ground may reclassify
-legacy false obstacles caused by its absolute-Z projection on a slope.
-Trajectory-only evidence may fill unknown cells but never clears a baseline
-obstacle. Rejected terrain remains unchanged, and measured terrain obstacles
-are applied last, so walls and steps stay occupied. Every recorded trajectory
-point contributes direct free-space evidence because the robot physically
-occupied that position; segments are connected only when their spacing is at
-most 0.50 m. This evidence can fill unknown cells but cannot clear an existing
-baseline or measured terrain obstacle. A lost
-ground trace can reacquire only from a PMF-admissible seed inside a 0.65 m
-absolute band around the initial floor. This supports accumulated height on a
-long ramp while excluding the observed ceiling band. Ground trace validity
-continues to control elevation and slope reconstruction, independently of the
-gap-bounded driven free corridor.
-
-Before commit, the exporter requires at least 80 percent trajectory-ground
-trace coverage, reconstruction of 30 percent of PMF-admissible observed
-ground cells, and 60 percent of reconstructed ground in one eight-connected
-quality component. Primary ground propagation remains four-connected for step
-safety, and the existing height-bounded hole fill is unchanged; only the
-non-mutating completeness measurement accepts diagonal lidar sampling
-adjacency. The denominator deliberately excludes unobserved bounding-box
-area, so a valid narrow corridor is not rejected. These checks are computed
-from terrain itself rather than the preserved occupancy baseline, so a
-complete PGM cannot hide a sparse or fragmented terrain result.
-Ground must additionally cover 10 percent of legacy free cells, at least 95
-percent of the complete driven corridor must be known in the merged map, and
-every known legacy cell must remain known.
-
-The exporter writes a PGM/YAML occupancy map plus:
-
-```text
-terrain_2p5d.yaml
-terrain_elevation.f32     terrain_slope.f32
-terrain_roughness.f32     terrain_step.f32
-terrain_cost.u8           terrain_confidence.u8
-terrain_checksums.sha256
-terrain_ground.pcd        terrain_obstacles.pcd
-terrain_preview.ppm
-```
-
-The four `.f32` files are row-major little-endian floats with NaN for unknown
-cells. Cost uses ROS values 0-254 with 255 unknown; confidence uses 0-100 with
-255 unknown. Every array shares the PGM resolution, dimensions, lower-left
-origin, and row-major map coordinates. All files are generated in a staging
-directory, read back and checksummed before per-file atomic replacement;
-`terrain_2p5d.yaml` is installed last as the commit marker. Source PCDs are
-never modified.
-
-`go2_terrain::Go2TerrainLayer` raises costs only in cells already known free
-by the static layer. It refuses rolling costmaps and frames other than `map`,
-so it cannot accidentally be loaded into the local costmap. Approved slope
-costs are zero through 8 degrees, 15-80 from 8-30 degrees, and lethal above 30
-degrees only for an eight-connected group of at least four cells. Costs are
-expanded laterally by 0.20 m.
-
-For compatibility with the already validated occupancy exporter, obstacle
-inflation retains its legacy four-neighbour, rounded-cell behavior. At the
-0.05 m map resolution the configured 0.03 m value therefore expands one
-cardinal grid cell (an effective 0.05 m). Trajectory anchoring is separate: its
-0.25 m seed area uses the true metric distance between the path sample and
-each grid-cell center, so diagonal cells outside the circular radius cannot
-seed a disconnected surface.
-
-Manual export command:
+Use the existing workflow:
 
 ```bash
-roslaunch go2_terrain export_terrain.launch map_dir:=/absolute/map/directory
-rosrun go2_terrain validate_terrain_map.py --map-dir /absolute/map/directory
+run_go2 mapping new_site
+run_go2 save-map
+# Stop mapping with Ctrl+C before exporting.
+run_go2 export-map new_site
 ```
+
+The same default profile applies to all new maps; there are no site names,
+coordinates or per-map correction masks in the reconstruction algorithm.
+Existing saved maps are not re-exported automatically. Metadata without
+`reconstruction_revision` continues to validate as revision 1.
+
+The hidden legacy occupancy export supplies exact grid geometry only.
+Its absolute-Z black pixels are NOT inherited: a ramp can rise several metres
+above the initial floor without becoming a 2D obstacle.
+
+1. Measure the initial floor below the first trajectory XY; require base-to-floor
+   height 0.20–0.55 m. Trajectory Z is flattened and is never used as elevation.
+2. Approximate PMF supplies conservative distributed low-surface candidates.
+   Robust local planes connect and complete bounded sampling gaps up to 35°.
+   Retain only a height-continuous surface connected to the measured start floor.
+   Distributed seeds alone cannot make a detached roof into floor.
+3. Classify actual PCD points at 0.05–1.50 m above that surface as obstacles.
+   A staircase cannot be accepted solely because its smoothed plane is shallow:
+   coherent measured jumps of at least 0.05 m are retained as obstacle edges.
+4. Where a wall lacks a same-cell floor, fit an obstacle-only reference from
+   nearby accepted ground: search ≤1.0 m, nearest ground ≤0.8 m, at least eight
+   cells, ≥75% inliers, RMSE ≤0.035 m, two-dimensional support, slope ≤35°.
+   Require four consecutive 0.10 m measured vertical bins spanning ≥0.30 m
+   inside the obstacle-height band. Separated floor and ceiling points do not
+   qualify. This reference NEVER generates ground, free cells or terrain cost.
+   Unsupported vertical columns remain unknown, rather than being cleared.
+5. Construct PGM and all six terrain layers from this one surface. Ground free
+   completion is bounded to 0.10 m; walked free evidence uses a 0.18 m radius,
+   connects path samples only across gaps ≤0.50 m, and cannot erase obstacles.
+
+The exporter requires at least 100 ground cells; ≥80% of recorded trajectory
+samples must have reconstructed ground, ≥95% must lie in actual PGM free cells,
+and ≥95% must be reachable from the first sample without crossing an occupied
+or unknown cell. This is a grid connectivity check, not a full robot-footprint
+motion guarantee. An input with missing floor, contradictory obstacles or bad
+checksums fails explicitly; it is never forced to pass by clearing its walls.
+
+## Outputs and transaction
+
+```text
+map.pgm                 map.yaml
+terrain_2p5d.yaml        terrain_quality.yaml
+terrain_elevation.f32   terrain_slope.f32
+terrain_roughness.f32   terrain_step.f32
+terrain_cost.u8         terrain_confidence.u8
+terrain_ground.pcd      terrain_obstacles.pcd
+terrain_preview.ppm     terrain_checksums.sha256
+```
+
+All arrays share the PGM's 0.05 m resolution, dimensions and origin. Float layers
+are row-major little-endian; unknown is NaN or the format's documented sentinel.
+Cost uses 0–254, with 255 unknown; confidence uses 0–100, with 255 unknown.
+Step records height residual after subtracting the local slope, not ramp rise.
+An empty obstacle PCD is valid for a genuinely obstacle-free scene.
+
+Files are written and validated in a temporary directory. Source PCD snapshots
+are checked both before and after reconstruction. Commit backs up old assets
+with hard links, replaces files individually, and installs metadata last.
+Normal I/O errors roll back already replaced files. This is not a single
+filesystem transaction: power loss or forced termination during commit can
+leave a mixed set. Validation refuses that set; recover the old files from
+`.go2_terrain_recovery_*` before navigation. Never delete a recovery directory
+until the map has passed validation. Source PCDs are never modified.
+
+```bash
+rosrun go2_terrain validate_terrain_map.py --map-dir ~/go2_nav_ws/maps/new_site
+cat ~/go2_nav_ws/maps/new_site/terrain_quality.yaml
+```
+
+Configuration: `config/terrain_export.yaml`. The exporter records effective
+surface settings in metadata. Global slope cost stays zero through 8°, increases
+from 15 to 80 over 8–30°, and becomes lethal above 30° for a connected group of
+at least four cells, expanded by 0.20 m. Static unknown/lethal cells retain
+authority. Local costmap, extrinsics, footprint, TEB and chassis are unchanged.
+Map obstacle inflation remains 0.03 m (rounded to one cardinal 0.05 m cell);
+global/local costmap inflation remains the existing 0.10 m.
+
+## Regression checks
+
+```bash
+catkin_make run_tests_go2_terrain -j2
+catkin_test_results build/test_results/go2_terrain
+python3 src/go2_terrain/test/offline_export_regression.py \
+  --exporter "$PWD/devel/lib/go2_terrain/go2_terrain_exporter_node" \
+  --output-root "$PWD/experiments/review_new_dataset" \
+  --source-map "$PWD/maps/saved_site"
+```
+
+The integration test creates a private localhost ROS master, works on copies,
+validates the full asset set, corrupts a copied input to test failure preservation,
+and verifies source map hashes. It never starts navigation or a chassis bridge.
+See `THIRD_PARTY.md` for the PDF Route 1 source provenance.
 
 ## Runtime data flow
 
@@ -147,13 +166,20 @@ Health is published on `/terrain/healthy` and `/terrain/status`. Diagnostics
 include `ground_ratio`, `output_rate_hz`, point counts, processing latency, and
 high-return counts. Health additionally requires at least 0.60 square metres
 of one connected ground component, 0.18 square metres of support within 1.0 m
-of the robot, and at least four of eight near-field sectors with two cells
-each. A Huber-robust plane `z=ax+by+c` is fitted to the selected near-field
+of the robot, and at least two of eight near-field sectors with two cells
+each in the deployed GO2 configuration. A Huber-robust plane `z=ax+by+c` is fitted to the selected near-field
 ground component within 1.50 m of the MID360. Diagnostics report height `-c`,
 slope, weighted RMSE, sample count, and fit status. At least 12 samples with
 non-degenerate planar spread are required, RMSE may not exceed 0.04 m, and the
 measured height must remain within 0.43-0.59 m. The local-radius limit prevents
 distant terrain or a slope transition from moving the height at the robot.
+Before fitting, a deterministic plane consensus may exclude inconsistent
+samples only when at least 70% support one plane and at least 12 remain.
+The same spread, residual and physical-height limits apply. Consensus never
+prefers nominal standing height or adds ground cells; low posture remains
+invalid. Diagnostics distinguish `ground_plane_candidate_samples` from the
+samples retained in the fit. See `TERRAIN_HEIGHT_FIX_20260911.md` at the
+workspace root for Robot 2 replay evidence and remaining field validation.
 Sparse, fragmented, remote-only, one-sided, crouched, or abnormally elevated
 support therefore cannot arm navigation. Health also remains false until at
 least three valid frame-rate
@@ -175,7 +201,7 @@ License:    GPL-3.0
 Its upstream CMake did not export `include`; this workspace adds
 `catkin_package(INCLUDE_DIRS include)` and builds the bounded queue-one wrapper
 inside that same GPL package. No Patchwork algorithm source is changed. The
-BSD `go2_terrain` binaries communicate with it only through ROS messages and
+`go2_terrain` runtime nodes communicate with it only through ROS messages and
 do not include or link the GPL template implementation. See
 `src/third_party/patchworkpp/LOCAL_CHANGES.md`.
 

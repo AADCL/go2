@@ -3,6 +3,7 @@
   <arg name="map_root" default="$(env HOME)/go2_nav_ws/maps"/>
   <arg name="start_lidar" default="true"/>
   <arg name="use_real_sdk" default="false"/>
+  <arg name="gait_policy" default="preserve_current"/>
   <arg name="network_interface" default="go2dds"/>
   <arg name="terrain_enabled" default="false"/>
   <arg name="terrain_metadata" default=""/>
@@ -39,6 +40,7 @@
   </include>
   <include file="$(find go2_control)/launch/control.launch">
     <arg name="use_real_sdk" value="$(arg use_real_sdk)"/>
+    <arg name="gait_policy" value="$(arg gait_policy)"/>
     <arg name="network_interface" value="$(arg network_interface)"/>
     <arg name="require_terrain_health" value="$(arg terrain_enabled)"/>
     <arg name="terrain_health_timeout_sec"

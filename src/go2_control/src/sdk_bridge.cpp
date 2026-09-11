@@ -20,6 +20,7 @@
 #include <unitree/robot/channel/channel_subscriber.hpp>
 #include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
 #include <unitree/robot/go2/sport/sport_client.hpp>
+#include <unitree/robot/go2/sport/sport_api.hpp>
 
 #include <algorithm>
 #include <array>
@@ -30,11 +31,24 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 
 namespace
 {
 constexpr const char* kLowStateTopic = "rt/lowstate";
 constexpr const char* kSportStateTopic = "rt/sportmodestate";
+
+// The bundled ClassicWalk wrapper discards Response.data. Retain that data
+// using the same registered API and JsonizeDataBool wire payload.
+class DetailedSportClient : public unitree::robot::go2::SportClient
+{
+public:
+  int32_t requestClassicWalk(std::string& response)
+  {
+    return Call(unitree::robot::go2::ROBOT_SPORT_API_ID_CLASSICWALK,
+                "{\"data\":true}", response);
+  }
+};
 
 template <typename Source, typename Destination>
 void copyArray(const Source& source, Destination& destination)
@@ -72,6 +86,9 @@ public:
                             "/localization/ok");
     pnh_.param<std::string>("network_interface", network_interface_, "go2dds");
     pnh_.param<std::string>("gait_mode", gait_mode_, "direct_mcf");
+    pnh_.param<std::string>("gait_policy", gait_policy_, "preserve_current");
+    if (gait_policy_ != "preserve_current" && gait_policy_ != "request_classic_once")
+      throw std::runtime_error("gait_policy must be preserve_current or request_classic_once");
     pnh_.param("allow_motion_mode_switch", allow_motion_mode_switch_, false);
     pnh_.param<std::string>("motion_mode_selector", motion_mode_selector_,
                             "");
@@ -112,7 +129,7 @@ public:
              network_interface_.c_str());
     unitree::robot::ChannelFactory::Instance()->Init(0, network_interface_);
 
-    sport_client_.reset(new unitree::robot::go2::SportClient());
+    sport_client_.reset(new DetailedSportClient());
     sport_client_->SetTimeout(1.0f);
     sport_client_->Init();
     ROS_WARN("Unitree sport API client=%s server=%s",
@@ -167,7 +184,6 @@ public:
     diagnostics_timer_ = nh_.createTimer(ros::Duration(1.0),
         &Go2SdkBridgeReal::diagnosticsCallback, this);
 
-    stopRobot();
     publishControlEnabled(false);
     ROS_WARN("REAL GO2 SDK bridge started DISABLED; gait=%s, required controller=%s, automatic mode switching=%s.",
              gait_mode_.c_str(), required_motion_mode_.c_str(),
@@ -296,20 +312,26 @@ private:
     last_gait_error_.clear();
     if (!ensureRequiredMotionMode()) return false;
 
-    const int32_t move_result = sport_client_->Move(0.0f, 0.0f, 0.0f);
-    last_move_result_.store(move_result);
-    if (move_result != 0)
+    last_classic_response_.clear();
+    last_classic_result_ = "not_requested";
+    if (gait_policy_ == "request_classic_once")
     {
-      last_gait_error_ = "Move(0,0,0) failed with SDK code " +
-          asString(move_result);
-      ROS_ERROR("Unitree %s", last_gait_error_.c_str());
-      return false;
+      const int32_t result = sport_client_->requestClassicWalk(last_classic_response_);
+      last_classic_result_ = asString(result);
+      if (result != 0)
+      {
+        last_gait_error_ = "ClassicWalk API 2049 failed with code " + asString(result) +
+            (result == -1 ? " (robot response; reason unspecified by SDK)" : "") +
+            "; response=" + last_classic_response_;
+        ROS_ERROR("%s; no automatic retry or fallback", last_gait_error_.c_str());
+        return false;
+      }
     }
 
     if (!verifyRequiredMotionMode()) return false;
 
-    ROS_WARN("GO2 direct Move control armed: controller=%s; no posture or gait transition API was called.",
-             current_motion_mode_.c_str());
+    ROS_WARN("GO2 direct Move control armed: controller=%s; gait_policy=%s; classic_request=%s. Current gait is not inferred from mcf.",
+             current_motion_mode_.c_str(), gait_policy_.c_str(), last_classic_result_.c_str());
     return true;
   }
 
@@ -338,10 +360,13 @@ private:
       last_nonzero_command_wall_.store(0.0);
       commanded_vx_.store(0.0);
       commanded_wz_.store(0.0);
-      enabled_.store(false);
-      publishControlEnabled(false);
-      stopRobot();
-      ROS_ERROR("Localization changed from OK to NOT OK; bridge disabled.");
+      {
+        std::lock_guard<std::mutex> lock(cmd_mutex_);
+        have_cmd_ = false;
+        last_cmd_ = geometry_msgs::Twist();
+      }
+      if (enabled_.load()) holdZeroVelocity(true);
+      ROS_ERROR("Localization lost: stopped; control remains enabled for a fresh goal after recovery.");
     }
   }
 
@@ -376,8 +401,10 @@ private:
     if (!request.data)
     {
       stopRobot();
-      response.success = true;
-      response.message = "REAL GO2 SDK bridge disabled; StopMove sent.";
+      response.success = idle_stop_sent_;
+      response.message = idle_stop_sent_
+          ? "REAL GO2 SDK bridge disabled; StopMove acknowledged."
+          : "Control disabled but StopMove failed; retry pending. Check the robot.";
       ROS_WARN("REAL GO2 motion bridge DISABLED.");
       return true;
     }
@@ -415,23 +442,38 @@ private:
     publishControlEnabled(true);
     response.success = true;
     response.message =
-        "REAL GO2 SDK bridge enabled for direct Move control in mcf; waiting for a new command.";
-    ROS_WARN("REAL GO2 motion bridge ENABLED for direct Move control in mcf.");
+        "REAL GO2 SDK bridge enabled in mcf; gait_policy=" + gait_policy_ +
+        "; waiting for a new command.";
+    ROS_WARN("REAL GO2 motion bridge ENABLED; gait_policy=%s.", gait_policy_.c_str());
     return true;
   }
 
   void controlCallback(const ros::TimerEvent&)
   {
-    if (!sport_client_ || !enabled_.load()) return;
+    if (!sport_client_) return;
+    if (stop_retry_pending_)
+    {
+      // A new command must not bypass an unacknowledged fault stop.
+      stopRobot();
+      return;
+    }
+    if (!enabled_.load())
+    {
+      // Retry a failed explicit/fault stop even after control is disabled.
+      if (!idle_stop_sent_) holdZeroVelocity(true);
+      return;
+    }
     if (!localization_ok_.load())
     {
       commanded_motion_active_.store(false);
       commanded_vx_.store(0.0);
       commanded_wz_.store(0.0);
-      enabled_.store(false);
-      publishControlEnabled(false);
-      stopRobot();
-      ROS_ERROR_THROTTLE(1.0, "Localization lost. Bridge disabled.");
+      {
+        std::lock_guard<std::mutex> lock(cmd_mutex_);
+        have_cmd_ = false;
+      }
+      holdZeroVelocity(true);
+      ROS_ERROR_THROTTLE(1.0, "Localization unavailable: stopped, awaiting recovery and a fresh goal.");
       return;
     }
 
@@ -447,7 +489,7 @@ private:
 
     if (!have_command)
     {
-      holdZeroVelocity();
+      holdZeroVelocity(true);
       return;
     }
     const ros::WallTime now = ros::WallTime::now();
@@ -457,7 +499,7 @@ private:
       commanded_motion_active_.store(false);
       commanded_vx_.store(0.0);
       commanded_wz_.store(0.0);
-      holdZeroVelocity();
+      holdZeroVelocity(true);
       ROS_WARN_THROTTLE(1.0, "Velocity command timeout: %.3f sec", age);
       return;
     }
@@ -511,6 +553,8 @@ private:
       return;
     }
 
+    idle_stop_sent_ = false;
+    normal_stop_started_ = ros::SteadyTime();
     const int32_t move_result = sport_client_->Move(vx, vy, wz);
     last_move_result_.store(move_result);
     if (move_result != 0)
@@ -716,6 +760,16 @@ private:
     gait_type_.store(static_cast<int>(state.gait_type()));
     foot_raise_height_.store(state.foot_raise_height());
     sport_state_error_code_.store(static_cast<int>(state.error_code()));
+    {
+      std::lock_guard<std::mutex> lock(stop_feedback_mutex_);
+      stop_feedback_rx_ = ros::SteadyTime::now().toSec();
+      stop_planar_speed_ = std::hypot(state.velocity()[0], state.velocity()[1]);
+      const double yaw = state.yaw_speed();
+      const double gyro = state.imu_state().gyroscope()[2];
+      stop_yaw_speed_ = std::isfinite(yaw) && std::isfinite(gyro)
+          ? std::max(std::fabs(yaw), std::fabs(gyro))
+          : std::numeric_limits<double>::quiet_NaN();
+    }
 
     const double period = 1.0 / std::max(1.0, telemetry_rate_hz_);
     if (wall_now - last_sport_state_publish_.load() < period) return;
@@ -803,6 +857,9 @@ private:
     status.values.push_back(keyValue("motion_enabled", enabled_.load() ? "true" : "false"));
     status.values.push_back(keyValue("localization_ok", localization_ok_.load() ? "true" : "false"));
     status.values.push_back(keyValue("gait_mode", gait_mode_));
+    status.values.push_back(keyValue("gait_policy", gait_policy_));
+    status.values.push_back(keyValue("last_classic_request_result", last_classic_result_));
+    status.values.push_back(keyValue("last_classic_response", last_classic_response_));
     status.values.push_back(keyValue("allow_motion_mode_switch",
         allow_motion_mode_switch_ ? "true" : "false"));
     status.values.push_back(keyValue("motion_mode_selector", motion_mode_selector_));
@@ -836,6 +893,8 @@ private:
     status.values.push_back(keyValue("sport_state_error_code", asString(sport_state_error_code_.load())));
     status.values.push_back(keyValue("sport_mode", asString(sport_mode_.load())));
     status.values.push_back(keyValue("gait_type", asString(gait_type_.load())));
+    status.values.push_back(keyValue("normal_stop_policy", "zero_move_with_standstill_check"));
+    status.values.push_back(keyValue("stop_complete", idle_stop_sent_ ? "true" : "false"));
     status.values.push_back(keyValue("foot_raise_height_m", asString(foot_raise_height_.load())));
     status.values.push_back(keyValue("battery_soc_percent", asString(battery_soc_.load())));
     status.values.push_back(keyValue("min_enable_battery_percent", asString(min_enable_battery_percent_)));
@@ -849,7 +908,13 @@ private:
 
   void stopRobot()
   {
-    if (sport_client_) sport_client_->StopMove();
+    normal_stop_started_ = ros::SteadyTime();
+    const int32_t result = sport_client_ ? sport_client_->StopMove() : 0;
+    last_move_result_.store(result);
+    idle_stop_sent_ = result == 0;
+    stop_retry_pending_ = result != 0;
+    if (result != 0)
+      ROS_ERROR_THROTTLE(1.0, "StopMove failed with SDK code %d; retry pending", result);
   }
 
   void publishControlEnabled(bool enabled)
@@ -860,10 +925,72 @@ private:
     control_enabled_pub_.publish(msg);
   }
 
-  void holdZeroVelocity()
+  void holdZeroVelocity(bool emergency = false)
   {
-    if (!sport_client_) return;
-    last_move_result_.store(sport_client_->Move(0.0, 0.0, 0.0));
+    if (!sport_client_ || idle_stop_sent_) return;
+    if (emergency)
+    {
+      stopRobot();
+      return;
+    }
+
+    // API 1003 correlated with a classic->default transition on this robot.
+    // Ordinary zero commands stay on the Move interface. Move is unacknowledged:
+    // repeat zero while checking fresh measured velocity, then release the SDK
+    // command stream so an idle bridge does not fight the handheld controller.
+    const ros::SteadyTime now = ros::SteadyTime::now();
+    if (normal_stop_started_.isZero())
+    {
+      normal_stop_started_ = now;
+      stationary_since_ = ros::SteadyTime();
+      last_zero_send_ = ros::SteadyTime();
+      ROS_INFO("Normal navigation stop: sending Move(0,0,0), awaiting standstill");
+    }
+    bool stationary = false;
+    {
+      std::lock_guard<std::mutex> lock(stop_feedback_mutex_);
+      const double age = now.toSec() - stop_feedback_rx_;
+      stationary = stop_feedback_rx_ >= normal_stop_started_.toSec() &&
+          age >= 0.0 && age <= 0.15 &&
+          std::isfinite(stop_planar_speed_) && std::isfinite(stop_yaw_speed_) &&
+          stop_planar_speed_ <= 0.05 && stop_yaw_speed_ <= 0.10;
+    }
+    if (!stationary) stationary_since_ = ros::SteadyTime();
+    else if (stationary_since_.isZero()) stationary_since_ = now;
+
+    const double elapsed = (now - normal_stop_started_).toSec();
+    if (elapsed >= 0.30 && !stationary_since_.isZero() &&
+        (now - stationary_since_).toSec() >= 0.20)
+    {
+      idle_stop_sent_ = true;
+      ROS_INFO("Normal navigation stop: standstill confirmed; SDK stream idle");
+      return;
+    }
+    if (elapsed >= 1.0)
+    {
+      failNormalStop("standstill not confirmed within 1 second");
+      return;
+    }
+    if (!last_zero_send_.isZero() && (now - last_zero_send_).toSec() < 0.05)
+      return;
+    last_zero_send_ = now;
+    const int32_t result = sport_client_->Move(0.0f, 0.0f, 0.0f);
+    last_move_result_.store(result);
+    if (result != 0)
+      failNormalStop("zero Move send failed with SDK code " + asString(result));
+  }
+
+  void failNormalStop(const std::string& reason)
+  {
+    ROS_ERROR("Normal stop failed: %s; disabling control and falling back to StopMove", reason.c_str());
+    enabled_.store(false);
+    publishControlEnabled(false);
+    {
+      std::lock_guard<std::mutex> lock(cmd_mutex_);
+      have_cmd_ = false;
+      last_cmd_ = geometry_msgs::Twist();
+    }
+    stopRobot();
   }
 
   ros::NodeHandle nh_;
@@ -882,7 +1009,7 @@ private:
   ros::Timer control_timer_;
   ros::Timer diagnostics_timer_;
 
-  std::unique_ptr<unitree::robot::go2::SportClient> sport_client_;
+  std::unique_ptr<DetailedSportClient> sport_client_;
   std::unique_ptr<unitree::robot::b2::MotionSwitcherClient> motion_switcher_;
   unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::LowState_>
       low_state_subscriber_;
@@ -925,7 +1052,17 @@ private:
   std::string command_topic_;
   std::string localization_ok_topic_;
   std::string network_interface_;
+  bool idle_stop_sent_ = true;
+  bool stop_retry_pending_ = false;
+  ros::SteadyTime normal_stop_started_, stationary_since_, last_zero_send_;
+  std::mutex stop_feedback_mutex_;
+  double stop_feedback_rx_ = 0.0;
+  double stop_planar_speed_ = std::numeric_limits<double>::quiet_NaN();
+  double stop_yaw_speed_ = std::numeric_limits<double>::quiet_NaN();
   std::string gait_mode_;
+  std::string gait_policy_;
+  std::string last_classic_result_ = "not_requested";
+  std::string last_classic_response_;
   bool allow_motion_mode_switch_;
   std::string motion_mode_selector_;
   std::string required_motion_mode_;

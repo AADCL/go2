@@ -2,16 +2,11 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include <Eigen/Cholesky>
-#include <Eigen/Core>
 
 #include <pcl/common/point_tests.h>
-#include <pcl/filters/extract_indices.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/segmentation/progressive_morphological_filter.h>
 
 #include <algorithm>
 #include <array>
@@ -39,6 +34,8 @@
 
 #include "go2_terrain/terrain_algorithms.hpp"
 #include "go2_terrain/terrain_grid.hpp"
+#include "go2_terrain/offline_surface.hpp"
+#include "go2_terrain/export_transaction.hpp"
 
 namespace go2_terrain
 {
@@ -72,47 +69,19 @@ struct MapDefinition
   int negate = 0;
 };
 
-struct ExportParameters
-{
-  double required_resolution = 0.05;
-  double map_padding_m = 0.50;
-  double base_search_radius = 1.0;
-  double base_min_height = 0.20;
-  double base_max_height = 0.55;
-  int base_min_points = 20;
-  double candidate_quantile = 0.05;
-  double candidate_support_band = 0.12;
-  double candidate_max_vertical_span = 0.25;
-  double trajectory_seed_radius = 0.25;
-  double seed_height_tolerance = 0.15;
-  double seed_cell_height_tolerance = 0.04;
-  double maximum_trajectory_gap = 0.50;
-  double maximum_reanchor_height_from_initial = 0.65;
-  double growth_height_margin = 0.005;
-  int growth_fill_iterations = 3;
-  double max_ground_slope_deg = 35.0;
-  double plane_radius = 0.30;
-  int plane_min_cells = 4;
-  double plane_huber_m = 0.03;
-  double max_plane_rmse = 0.08;
-  double obstacle_min_height = 0.05;
-  double obstacle_max_height = 1.50;
-  double obstacle_ground_search = 0.30;
-  int min_obstacle_points = 1;
-  double trajectory_free_radius = 0.18;
-  double obstacle_inflation_m = 0.03;
-  bool preserve_existing_map = true;
-  int minimum_ground_cells = 100;
-  double minimum_traced_trajectory_ratio = 0.80;
-  double minimum_ground_observation_ratio = 0.30;
-  double minimum_largest_ground_component_ratio = 0.60;
-  double minimum_ground_to_baseline_free_ratio = 0.08;
-  double minimum_trajectory_corridor_known_ratio = 0.95;
+struct ExportParameters {
+  double required_resolution=0.05, map_padding_m=0.50;
+  double base_search_radius=1.0, base_min_height=0.20, base_max_height=0.55;
+  int base_min_points=20;
+  double obstacle_min_height=0.05, obstacle_max_height=1.50;
+  int min_obstacle_points=2, minimum_ground_cells=100;
+  double trajectory_free_radius=0.18, maximum_trajectory_gap=0.50;
+  double obstacle_inflation_m=0.03, ground_free_dilation=0.10;
+  double minimum_trajectory_ground_ratio=0.80;
+  double minimum_trajectory_free_ratio=0.95;
+  double minimum_trajectory_reachable_ratio=0.95;
   CostParameters cost;
-  int pmf_max_window_size = 20;
-  double pmf_slope = 0.7;
-  double pmf_initial_distance = 0.08;
-  double pmf_max_distance = 0.30;
+  SurfaceParameters surface;
 };
 
 std::size_t cellIndex(int x, int y, const GridGeometry& geometry)
@@ -245,82 +214,6 @@ MapDefinition loadMapDefinition(const std::string& map_yaml)
   return result;
 }
 
-std::vector<std::uint8_t> readMapOccupancy(const MapDefinition& map)
-{
-  std::ifstream input(map.input_image_path.c_str(), std::ios::binary);
-  if (!input)
-  {
-    throw std::runtime_error("Cannot open map image: " + map.input_image_path);
-  }
-  const std::string magic = readPgmToken(&input);
-  if (magic != "P5" && magic != "P2")
-  {
-    throw std::runtime_error("Only P5/P2 PGM map images are supported: " +
-                             map.input_image_path);
-  }
-  const long width = std::stol(readPgmToken(&input));
-  const long height = std::stol(readPgmToken(&input));
-  const long maximum = std::stol(readPgmToken(&input));
-  if (width != static_cast<long>(map.geometry.width) ||
-      height != static_cast<long>(map.geometry.height) ||
-      maximum <= 0 || maximum > 255)
-  {
-    throw std::runtime_error("Map image geometry or range is invalid: " +
-                             map.input_image_path);
-  }
-
-  const std::size_t count = map.geometry.cellCount();
-  std::vector<std::uint8_t> pixels(count, 0U);
-  if (magic == "P5")
-  {
-    input.read(reinterpret_cast<char*>(pixels.data()),
-               static_cast<std::streamsize>(pixels.size()));
-    if (input.gcount() != static_cast<std::streamsize>(pixels.size()))
-    {
-      throw std::runtime_error("Map image is truncated: " +
-                               map.input_image_path);
-    }
-  }
-  else
-  {
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      const long value = std::stol(readPgmToken(&input));
-      if (value < 0 || value > maximum)
-      {
-        throw std::runtime_error("Map image pixel is outside its range: " +
-                                 map.input_image_path);
-      }
-      pixels[i] = static_cast<std::uint8_t>(value);
-    }
-  }
-
-  std::vector<std::uint8_t> occupancy(count, kUnknownImage);
-  for (std::size_t image_y = 0; image_y < map.geometry.height; ++image_y)
-  {
-    const std::size_t grid_y = map.geometry.height - image_y - 1U;
-    for (std::size_t x = 0; x < map.geometry.width; ++x)
-    {
-      const std::uint8_t pixel =
-          pixels[image_y * map.geometry.width + x];
-      const double normalized = static_cast<double>(pixel) /
-                                static_cast<double>(maximum);
-      const double occupied_probability =
-          map.negate != 0 ? normalized : 1.0 - normalized;
-      const std::size_t destination = grid_y * map.geometry.width + x;
-      if (occupied_probability > map.occupied_threshold)
-      {
-        occupancy[destination] = kOccupiedImage;
-      }
-      else if (occupied_probability < map.free_threshold)
-      {
-        occupancy[destination] = kFreeImage;
-      }
-    }
-  }
-  return occupancy;
-}
-
 MapDefinition deriveMapDefinition(const pcl::PointCloud<pcl::PointXYZ>& cloud,
                                   const ExportParameters& parameters)
 {
@@ -395,6 +288,7 @@ double estimateBaseToFloor(
         "traversed_path_map.pcd is empty; base-to-floor cannot be estimated safely");
   }
   const pcl::PointXYZ& start = trajectory.front();
+  if (!pcl::isFinite(start)) throw std::runtime_error("Invalid first trajectory point");
   const double radius_squared =
       parameters.base_search_radius * parameters.base_search_radius;
   const double bin_width = 0.01;
@@ -807,17 +701,6 @@ std::string utcNow()
   return text;
 }
 
-void atomicReplace(const boost::filesystem::path& source,
-                   const boost::filesystem::path& destination)
-{
-  if (std::rename(source.string().c_str(), destination.string().c_str()) != 0)
-  {
-    throw std::runtime_error("Atomic rename failed: " + source.string() +
-                             " -> " + destination.string() + ": " +
-                             std::strerror(errno));
-  }
-}
-
 void writePgm(const std::string& path,
               const std::vector<std::uint8_t>& grid,
               const GridGeometry& geometry)
@@ -969,19 +852,8 @@ public:
                map.geometry.width, map.geometry.height);
     }
 
-    std::vector<std::uint8_t> baseline_occupancy;
-    if (parameters_.preserve_existing_map)
-    {
-      if (!has_input_map)
-      {
-        throw std::runtime_error(
-            "occupancy/preserve_existing_map requires input_map_yaml");
-      }
-      baseline_occupancy = readMapOccupancy(map);
-      ROS_INFO("Loaded existing occupancy as atomic export baseline: %s",
-               map.input_image_path.c_str());
-    }
-
+    // Absolute-Z occupancy is used for geometry only. Copying its black
+    // pixels would reintroduce the exact ramp-as-obstacle defect.
     const double base_to_floor =
         estimateBaseToFloor(*cloud, *trajectory, parameters_);
     ROS_INFO("Estimated base_link-to-floor height: %.3f m", base_to_floor);
@@ -994,7 +866,6 @@ public:
                 *trajectory,
                 map.geometry,
                 base_to_floor,
-                baseline_occupancy,
                 &terrain,
                 &occupancy,
                 &ground_diagnostic,
@@ -1077,857 +948,178 @@ private:
     param("base_height/min", &parameters_.base_min_height);
     param("base_height/max", &parameters_.base_max_height);
     int_param("base_height/min_points", &parameters_.base_min_points);
-    param("ground/candidate_quantile", &parameters_.candidate_quantile);
-    param("ground/candidate_support_band",
-          &parameters_.candidate_support_band);
-    param("ground/candidate_max_vertical_span",
-          &parameters_.candidate_max_vertical_span);
-    param("ground/trajectory_seed_radius",
-          &parameters_.trajectory_seed_radius);
-    param("ground/seed_height_tolerance",
-          &parameters_.seed_height_tolerance);
-    param("ground/seed_cell_height_tolerance",
-          &parameters_.seed_cell_height_tolerance);
-    param("ground/max_trajectory_gap_m",
-          &parameters_.maximum_trajectory_gap);
-    param("ground/max_reanchor_height_from_initial_m",
-          &parameters_.maximum_reanchor_height_from_initial);
-    param("ground/growth_height_margin",
-          &parameters_.growth_height_margin);
-    int_param("ground/growth_fill_iterations",
-              &parameters_.growth_fill_iterations);
-    param("ground/max_slope_deg", &parameters_.max_ground_slope_deg);
-    param("ground/plane_radius", &parameters_.plane_radius);
-    int_param("ground/plane_min_cells", &parameters_.plane_min_cells);
-    param("ground/plane_huber_m", &parameters_.plane_huber_m);
-    param("ground/max_plane_rmse", &parameters_.max_plane_rmse);
     param("obstacle/min_height", &parameters_.obstacle_min_height);
     param("obstacle/max_height", &parameters_.obstacle_max_height);
-    param("obstacle/ground_search", &parameters_.obstacle_ground_search);
     int_param("obstacle/min_points", &parameters_.min_obstacle_points);
-    param("occupancy/trajectory_free_radius",
-          &parameters_.trajectory_free_radius);
-    param("occupancy/obstacle_inflation_m",
-          &parameters_.obstacle_inflation_m);
-    private_nh_.param("occupancy/preserve_existing_map",
-                      parameters_.preserve_existing_map,
-                      parameters_.preserve_existing_map);
     int_param("minimum_ground_cells", &parameters_.minimum_ground_cells);
-    param("quality/minimum_traced_trajectory_ratio",
-          &parameters_.minimum_traced_trajectory_ratio);
-    param("quality/minimum_ground_observation_ratio",
-          &parameters_.minimum_ground_observation_ratio);
-    param("quality/minimum_largest_ground_component_ratio",
-          &parameters_.minimum_largest_ground_component_ratio);
-    param("quality/minimum_ground_to_baseline_free_ratio",
-          &parameters_.minimum_ground_to_baseline_free_ratio);
-    param("quality/minimum_trajectory_corridor_known_ratio",
-          &parameters_.minimum_trajectory_corridor_known_ratio);
+    param("occupancy/trajectory_free_radius", &parameters_.trajectory_free_radius);
+    param("occupancy/max_trajectory_gap", &parameters_.maximum_trajectory_gap);
+    param("occupancy/obstacle_inflation_m", &parameters_.obstacle_inflation_m);
+    param("occupancy/ground_free_dilation", &parameters_.ground_free_dilation);
+    param("quality/minimum_trajectory_ground_ratio", &parameters_.minimum_trajectory_ground_ratio);
+    param("quality/minimum_trajectory_free_ratio", &parameters_.minimum_trajectory_free_ratio);
+    param("quality/minimum_trajectory_reachable_ratio", &parameters_.minimum_trajectory_reachable_ratio);
     param("cost/flat_slope_deg", &parameters_.cost.flat_slope_deg);
     param("cost/lethal_slope_deg", &parameters_.cost.lethal_slope_deg);
-    double minimum_cost = parameters_.cost.minimum_cost;
-    double maximum_soft_cost = parameters_.cost.maximum_soft_cost;
-    param("cost/minimum_cost", &minimum_cost);
-    param("cost/maximum_soft_cost", &maximum_soft_cost);
-    parameters_.cost.minimum_cost = static_cast<float>(minimum_cost);
-    parameters_.cost.maximum_soft_cost = static_cast<float>(maximum_soft_cost);
-    int lethal_cluster =
-        static_cast<int>(parameters_.cost.minimum_lethal_cluster_cells);
-    int_param("cost/minimum_lethal_cluster_cells", &lethal_cluster);
-    parameters_.cost.minimum_lethal_cluster_cells =
-        static_cast<std::size_t>(std::max(1, lethal_cluster));
     param("cost/dilation_m", &parameters_.cost.dilation_m);
-    int_param("pmf/max_window_size", &parameters_.pmf_max_window_size);
-    param("pmf/slope", &parameters_.pmf_slope);
-    param("pmf/initial_distance", &parameters_.pmf_initial_distance);
-    param("pmf/max_distance", &parameters_.pmf_max_distance);
-
-    if (parameters_.base_min_height < 0.20 ||
-        parameters_.base_max_height > 0.55 ||
-        parameters_.base_min_height >= parameters_.base_max_height)
-    {
-      throw std::runtime_error(
-          "base_height limits must remain within the approved [0.20, 0.55] m range");
-    }
-    if (parameters_.minimum_traced_trajectory_ratio <= 0.0 ||
-        parameters_.minimum_traced_trajectory_ratio > 1.0 ||
-        parameters_.minimum_ground_observation_ratio <= 0.0 ||
-        parameters_.minimum_ground_observation_ratio > 1.0 ||
-        parameters_.minimum_largest_ground_component_ratio <= 0.0 ||
-        parameters_.minimum_largest_ground_component_ratio > 1.0 ||
-        parameters_.minimum_ground_to_baseline_free_ratio <= 0.0 ||
-        parameters_.minimum_ground_to_baseline_free_ratio > 1.0 ||
-        parameters_.minimum_trajectory_corridor_known_ratio <= 0.0 ||
-        parameters_.minimum_trajectory_corridor_known_ratio > 1.0 ||
-        parameters_.maximum_reanchor_height_from_initial <= 0.0)
-    {
-      throw std::runtime_error("Terrain quality ratios must be in (0, 1]");
-    }
-    const double maximum_adjacent_rise =
-        std::tan(parameters_.max_ground_slope_deg * kPi / 180.0) *
-            parameters_.required_resolution +
-        parameters_.growth_height_margin;
-    if (!nearlyEqual(parameters_.required_resolution, 0.05, 1e-9) ||
-        maximum_adjacent_rise >= 0.05 ||
-        parameters_.seed_cell_height_tolerance >= 0.05)
-    {
-      throw std::runtime_error(
-          "Ground continuity settings must preserve a strict barrier at a 0.05 m step");
-    }
-    if (parameters_.max_ground_slope_deg != 35.0 ||
-        parameters_.cost.flat_slope_deg != 8.0 ||
-        parameters_.cost.lethal_slope_deg != 30.0 ||
-        parameters_.cost.minimum_lethal_cluster_cells != 4 ||
-        !nearlyEqual(parameters_.obstacle_min_height, 0.05, 1e-9) ||
-        !nearlyEqual(parameters_.obstacle_max_height, 1.50, 1e-9) ||
-        !parameters_.preserve_existing_map ||
-        !nearlyEqual(parameters_.maximum_reanchor_height_from_initial,
-                     0.65, 1e-9) ||
-        !nearlyEqual(parameters_.minimum_traced_trajectory_ratio,
-                     0.80, 1e-9) ||
-        !nearlyEqual(parameters_.minimum_ground_observation_ratio,
-                     0.30, 1e-9) ||
-        !nearlyEqual(parameters_.minimum_largest_ground_component_ratio,
-                     0.60, 1e-9) ||
-        !nearlyEqual(parameters_.minimum_ground_to_baseline_free_ratio,
-                     0.08, 1e-9) ||
-        !nearlyEqual(parameters_.minimum_trajectory_corridor_known_ratio,
-                     0.95, 1e-9) ||
-        !nearlyEqual(parameters_.trajectory_free_radius, 0.18, 1e-9) ||
-        !nearlyEqual(parameters_.obstacle_inflation_m, 0.03, 1e-9) ||
-        !nearlyEqual(parameters_.cost.minimum_cost, 15.0, 1e-9) ||
-        !nearlyEqual(parameters_.cost.maximum_soft_cost, 80.0, 1e-9) ||
-        !nearlyEqual(parameters_.cost.dilation_m, 0.20, 1e-9))
-    {
-      throw std::runtime_error(
-          "Terrain safety thresholds differ from the approved GO2 profile");
-    }
+    double min_cost=parameters_.cost.minimum_cost, max_cost=parameters_.cost.maximum_soft_cost;
+    param("cost/minimum_cost", &min_cost); param("cost/maximum_soft_cost", &max_cost);
+    parameters_.cost.minimum_cost=min_cost; parameters_.cost.maximum_soft_cost=max_cost;
+    int cluster=parameters_.cost.minimum_lethal_cluster_cells;
+    int_param("cost/minimum_lethal_cluster_cells", &cluster);
+    parameters_.cost.minimum_lethal_cluster_cells=cluster;
+    private_nh_.param("surface/candidate_percentile", parameters_.surface.candidate_percentile, parameters_.surface.candidate_percentile);
+    private_nh_.param("surface/seed_radius_m", parameters_.surface.seed_radius_m, parameters_.surface.seed_radius_m);
+    private_nh_.param("surface/seed_height_tolerance_m", parameters_.surface.seed_height_tolerance_m, parameters_.surface.seed_height_tolerance_m);
+    private_nh_.param("surface/trusted_seed_height_tolerance_m", parameters_.surface.trusted_seed_height_tolerance_m, parameters_.surface.trusted_seed_height_tolerance_m);
+    private_nh_.param("surface/pmf_max_window_size", parameters_.surface.pmf_max_window_size, parameters_.surface.pmf_max_window_size);
+    private_nh_.param("surface/pmf_slope", parameters_.surface.pmf_slope, parameters_.surface.pmf_slope);
+    private_nh_.param("surface/pmf_initial_distance_m", parameters_.surface.pmf_initial_distance_m, parameters_.surface.pmf_initial_distance_m);
+    private_nh_.param("surface/pmf_max_distance_m", parameters_.surface.pmf_max_distance_m, parameters_.surface.pmf_max_distance_m);
+    private_nh_.param("surface/pmf_base", parameters_.surface.pmf_base, parameters_.surface.pmf_base);
+    private_nh_.param("surface/pmf_exponential", parameters_.surface.pmf_exponential, parameters_.surface.pmf_exponential);
+    private_nh_.param("surface/validation_radius_m", parameters_.surface.validation_radius_m, parameters_.surface.validation_radius_m);
+    private_nh_.param("surface/validation_min_candidates", parameters_.surface.validation_min_candidates, parameters_.surface.validation_min_candidates);
+    private_nh_.param("surface/plane_inlier_tolerance_m", parameters_.surface.plane_inlier_tolerance_m, parameters_.surface.plane_inlier_tolerance_m);
+    private_nh_.param("surface/plane_min_inlier_ratio", parameters_.surface.plane_min_inlier_ratio, parameters_.surface.plane_min_inlier_ratio);
+    private_nh_.param("surface/plane_min_spread_m", parameters_.surface.plane_min_spread_m, parameters_.surface.plane_min_spread_m);
+    private_nh_.param("surface/candidate_plane_tolerance_m", parameters_.surface.candidate_plane_tolerance_m, parameters_.surface.candidate_plane_tolerance_m);
+    private_nh_.param("surface/plane_max_rmse_m", parameters_.surface.plane_max_rmse_m, parameters_.surface.plane_max_rmse_m);
+    private_nh_.param("surface/max_ground_slope_deg", parameters_.surface.max_ground_slope_deg, parameters_.surface.max_ground_slope_deg);
+    private_nh_.param("surface/connect_radius_m", parameters_.surface.connect_radius_m, parameters_.surface.connect_radius_m);
+    private_nh_.param("surface/connection_plane_tolerance_m", parameters_.surface.connection_plane_tolerance_m, parameters_.surface.connection_plane_tolerance_m);
+    private_nh_.param("surface/connection_max_normal_delta_deg", parameters_.surface.connection_max_normal_delta_deg, parameters_.surface.connection_max_normal_delta_deg);
+    private_nh_.param("surface/max_ground_step_m", parameters_.surface.max_ground_step_m, parameters_.surface.max_ground_step_m);
+    private_nh_.param("surface/surface_fit_radius_m", parameters_.surface.surface_fit_radius_m, parameters_.surface.surface_fit_radius_m);
+    private_nh_.param("surface/surface_observation_radius_m", parameters_.surface.surface_observation_radius_m, parameters_.surface.surface_observation_radius_m);
+    private_nh_.param("surface/surface_gap_fill_radius_m", parameters_.surface.surface_gap_fill_radius_m, parameters_.surface.surface_gap_fill_radius_m);
+    private_nh_.param("surface/surface_min_candidates", parameters_.surface.surface_min_candidates, parameters_.surface.surface_min_candidates);
+    private_nh_.param("surface/surface_min_component_cells", parameters_.surface.surface_min_component_cells, parameters_.surface.surface_min_component_cells);
+    private_nh_.param("surface/surface_min_component_fraction", parameters_.surface.surface_min_component_fraction, parameters_.surface.surface_min_component_fraction);
+    private_nh_.param("surface/min_connected_ground_cells", parameters_.surface.min_connected_ground_cells, parameters_.surface.min_connected_ground_cells);
+    private_nh_.param("surface/wall_search_radius_m", parameters_.surface.wall_search_radius_m, parameters_.surface.wall_search_radius_m);
+    private_nh_.param("surface/wall_max_nearest_m", parameters_.surface.wall_max_nearest_m, parameters_.surface.wall_max_nearest_m);
+    private_nh_.param("surface/wall_min_inlier_ratio", parameters_.surface.wall_min_inlier_ratio, parameters_.surface.wall_min_inlier_ratio);
+    private_nh_.param("surface/wall_min_ground_cells", parameters_.surface.wall_min_ground_cells, parameters_.surface.wall_min_ground_cells);
+    if (parameters_.base_min_height<0.20 || parameters_.base_max_height>0.55 ||
+        parameters_.base_min_height>=parameters_.base_max_height ||
+        parameters_.min_obstacle_points<1 || parameters_.minimum_ground_cells<100)
+      throw std::runtime_error("Invalid base-height or minimum support limits");
+    for (double ratio: {parameters_.minimum_trajectory_ground_ratio,
+                        parameters_.minimum_trajectory_free_ratio,
+                        parameters_.minimum_trajectory_reachable_ratio})
+      if (!std::isfinite(ratio) || ratio<=0 || ratio>1)
+        throw std::runtime_error("Terrain quality ratios must be finite and in (0,1]");
+    if (parameters_.minimum_trajectory_ground_ratio<0.80 ||
+        parameters_.minimum_trajectory_free_ratio<0.95 ||
+        parameters_.minimum_trajectory_reachable_ratio<0.95 ||
+        !std::isfinite(parameters_.ground_free_dilation) || parameters_.ground_free_dilation<0 ||
+        parameters_.ground_free_dilation>0.10 || !std::isfinite(parameters_.maximum_trajectory_gap) ||
+        parameters_.maximum_trajectory_gap<=0 || parameters_.maximum_trajectory_gap>0.50)
+      throw std::runtime_error("Export quality/free-space limits are outside the validated profile");
+    if (parameters_.required_resolution!=0.05 || parameters_.surface.max_ground_slope_deg!=35.0 ||
+        parameters_.cost.flat_slope_deg!=8.0 || parameters_.cost.lethal_slope_deg!=30.0 ||
+        cluster!=4 || min_cost!=15 || max_cost!=80 || parameters_.cost.dilation_m!=0.20 ||
+        parameters_.obstacle_min_height!=0.05 || parameters_.obstacle_max_height!=1.50 ||
+        parameters_.trajectory_free_radius!=0.18 || parameters_.obstacle_inflation_m!=0.03)
+      throw std::runtime_error("Terrain settings differ from the approved Go2 profile");
   }
 
   void reconstruct(const pcl::PointCloud<pcl::PointXYZ>& cloud,
                    const pcl::PointCloud<pcl::PointXYZ>& trajectory,
-                   const GridGeometry& geometry,
-                   double base_to_floor,
-                   const std::vector<std::uint8_t>& baseline_occupancy,
-                   TerrainGrid* terrain,
-                   std::vector<std::uint8_t>* occupancy,
+                   const GridGeometry& geometry, double base_to_floor,
+                   TerrainGrid* terrain, std::vector<std::uint8_t>* occupancy,
                    pcl::PointCloud<pcl::PointXYZI>* ground_diagnostic,
-                   pcl::PointCloud<pcl::PointXYZI>* obstacle_diagnostic) const
+                   pcl::PointCloud<pcl::PointXYZI>* obstacle_diagnostic)
   {
-    terrain->resize(geometry);
-    const std::size_t count = geometry.cellCount();
-    if (!baseline_occupancy.empty() && baseline_occupancy.size() != count)
-    {
-      throw std::runtime_error("Baseline occupancy geometry does not match map");
+    std::vector<PlanarPoint> path;
+    for (const auto& point: trajectory) if (pcl::isFinite(point)) path.push_back({point.x,point.y});
+    if (path.empty()) throw std::runtime_error("No finite trajectory points");
+    auto p=parameters_.surface;
+    p.cell_size=geometry.resolution;
+    p.seed_x=path.front().x; p.seed_y=path.front().y; p.seed_ground_z=-base_to_floor;
+    p.min_obstacle_relative_height_m=parameters_.obstacle_min_height;
+    p.max_obstacle_relative_height_m=parameters_.obstacle_max_height;
+    ROS_INFO("Reconstruction revision 2: distributed PMF anchors + continuous surface + observed wall recovery");
+    auto result=reconstructSurface(cloud,geometry,p);
+    *terrain=std::move(result.terrain);
+    *ground_diagnostic=std::move(result.ground);
+    *obstacle_diagnostic=std::move(result.obstacles);
+    if (ground_diagnostic->size()<static_cast<std::size_t>(parameters_.minimum_ground_cells))
+      throw std::runtime_error("Insufficient reconstructed ground; old export retained");
+    terrain->cost=buildSlopeCostLayer(terrain->slope_deg,geometry,parameters_.cost);
+    const std::size_t count=geometry.cellCount();
+    std::vector<std::uint8_t> ground(count,0), obstacles(count,0), expanded, blocked;
+    for (std::size_t i=0;i<count;++i) {
+      ground[i]=isKnown(terrain->elevation[i]);
+      obstacles[i]=result.obstacle_count[i]>=static_cast<unsigned>(parameters_.min_obstacle_points) ||
+                   result.measured_step[i];
     }
-    std::vector<std::vector<float>> samples(count);
-    for (const auto& point : cloud.points)
-    {
-      if (!pcl::isFinite(point))
-      {
-        continue;
-      }
-      int x = 0;
-      int y = 0;
-      if (pointToCell(point.x, point.y, geometry, &x, &y))
-      {
-        samples[cellIndex(x, y, geometry)].push_back(point.z);
-      }
-    }
-
-    std::vector<float> candidate(count,
-                                 std::numeric_limits<float>::quiet_NaN());
-    std::vector<float> vertical_span(count,
-                                     std::numeric_limits<float>::quiet_NaN());
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (samples[i].empty())
-      {
-        continue;
-      }
-      const GroundColumnSummary summary = summarizeGroundColumn(
-          samples[i],
-          parameters_.candidate_quantile,
-          parameters_.candidate_support_band);
-      candidate[i] = summary.candidate;
-      vertical_span[i] = summary.support_span;
-    }
-
-    pcl::PointIndices pmf_indices;
-    pcl::ProgressiveMorphologicalFilter<pcl::PointXYZ> pmf;
-    pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud_ptr = cloud.makeShared();
-    pmf.setInputCloud(cloud_ptr);
-    pmf.setMaxWindowSize(parameters_.pmf_max_window_size);
-    pmf.setSlope(parameters_.pmf_slope);
-    pmf.setInitialDistance(parameters_.pmf_initial_distance);
-    pmf.setMaxDistance(parameters_.pmf_max_distance);
-    pmf.extract(pmf_indices.indices);
-    std::vector<std::uint8_t> pmf_seed(count, 0);
-    for (const int index : pmf_indices.indices)
-    {
-      const auto& point = cloud.points[static_cast<std::size_t>(index)];
-      int x = 0;
-      int y = 0;
-      if (pointToCell(point.x, point.y, geometry, &x, &y))
-      {
-        pmf_seed[cellIndex(x, y, geometry)] = 1;
-      }
-    }
-    const std::size_t candidate_cells = static_cast<std::size_t>(std::count_if(
-        candidate.begin(), candidate.end(),
-        [](float value) { return isKnown(value); }));
-    const std::size_t pmf_cells = static_cast<std::size_t>(std::count(
-        pmf_seed.begin(), pmf_seed.end(), static_cast<std::uint8_t>(1U)));
-    std::size_t admissible_candidate_cells = 0U;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (pmf_seed[i] != 0U && isKnown(candidate[i]) &&
-          isKnown(vertical_span[i]) &&
-          vertical_span[i] <= parameters_.candidate_max_vertical_span)
-      {
-        ++admissible_candidate_cells;
-      }
-    }
-    ROS_INFO("Terrain ground inputs: candidates=%zu pmf_cells=%zu "
-             "admissible_candidates=%zu",
-             candidate_cells, pmf_cells, admissible_candidate_cells);
-
-    std::vector<PlanarPoint> trajectory_xy;
-    trajectory_xy.reserve(trajectory.size());
-    for (const auto& point : trajectory.points)
-    {
-      if (pcl::isFinite(point))
-      {
-        trajectory_xy.push_back({point.x, point.y});
-      }
-    }
-    if (trajectory_xy.empty())
-    {
-      throw std::runtime_error("Trajectory contains no finite points");
-    }
-    const std::vector<float> traced_ground = traceGroundAlongTrajectory(
-        trajectory_xy,
-        candidate,
-        vertical_span,
-        pmf_seed,
-        geometry,
-        parameters_.trajectory_seed_radius,
-        parameters_.candidate_max_vertical_span,
-        -base_to_floor,
-        parameters_.seed_height_tolerance,
-        parameters_.max_ground_slope_deg,
-        parameters_.growth_height_margin,
-        parameters_.maximum_reanchor_height_from_initial,
-        parameters_.maximum_trajectory_gap);
-
-    const std::size_t traced_points = static_cast<std::size_t>(std::count_if(
-        traced_ground.begin(), traced_ground.end(),
-        [](float value) { return isKnown(value); }));
-    const double traced_ratio = static_cast<double>(traced_points) /
-                                static_cast<double>(traced_ground.size());
-    ROS_INFO("Terrain trajectory trace: %zu/%zu (%.1f%%)",
-             traced_points, traced_ground.size(), 100.0 * traced_ratio);
-    if (traced_ratio < parameters_.minimum_traced_trajectory_ratio)
-    {
-      std::ostringstream error;
-      error << "Ground trace covers " << std::fixed << std::setprecision(1)
-            << 100.0 * traced_ratio << "% of trajectory; require at least "
-            << 100.0 * parameters_.minimum_traced_trajectory_ratio << "%";
-      throw std::runtime_error(error.str());
-    }
-    const std::vector<std::uint8_t> initial_seed = buildTrajectorySeedMask(
-        trajectory_xy,
-        traced_ground,
-        candidate,
-        vertical_span,
-        geometry,
-        parameters_.trajectory_seed_radius,
-        parameters_.candidate_max_vertical_span,
-        parameters_.seed_cell_height_tolerance);
-    const std::size_t initial_seed_cells = static_cast<std::size_t>(std::count(
-        initial_seed.begin(), initial_seed.end(), static_cast<std::uint8_t>(1U)));
-
-    const std::vector<std::uint8_t> accepted = growConnectedGround(
-        candidate,
-        vertical_span,
-        initial_seed,
-        geometry,
-        parameters_.candidate_max_vertical_span,
-        parameters_.max_ground_slope_deg,
-        parameters_.growth_height_margin,
-        parameters_.growth_fill_iterations);
-    const std::size_t accepted_cells = static_cast<std::size_t>(std::count(
-        accepted.begin(), accepted.end(), static_cast<std::uint8_t>(1U)));
-    ROS_INFO("Terrain ground propagation: trajectory_seeds=%zu accepted=%zu",
-             initial_seed_cells, accepted_cells);
-
-    std::vector<float> raw_elevation(count,
-                                     std::numeric_limits<float>::quiet_NaN());
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (accepted[i])
-      {
-        raw_elevation[i] = candidate[i];
-      }
-    }
-    fitTerrainPlanes(raw_elevation, samples, geometry, terrain);
-
-    std::size_t ground_cells = 0;
-    std::vector<std::uint8_t> reconstructed_ground(count, 0U);
-    for (std::size_t i = 0; i < terrain->elevation.size(); ++i)
-    {
-      if (isKnown(terrain->elevation[i]))
-      {
-        reconstructed_ground[i] = 1U;
-        ++ground_cells;
-      }
-    }
-    if (ground_cells < static_cast<std::size_t>(parameters_.minimum_ground_cells))
-    {
-      std::ostringstream error;
-      error << "Robust ground reconstruction produced " << ground_cells
-            << " cells (trajectory_seeds=" << initial_seed_cells
-            << ", accepted=" << accepted_cells << "); require at least "
-            << parameters_.minimum_ground_cells;
-      throw std::runtime_error(error.str());
-    }
-    // Every reconstructed cell originated from a trajectory-anchored,
-    // height- and slope-bounded candidate. Evaluate plane-fit retention
-    // against those candidates. A raw PMF overlap is not a reliable truth
-    // metric for indoor maps with walls, ceilings, and multiple floor levels.
-    const std::size_t eligible_observations = accepted_cells;
-    std::size_t reconstructed_observations = 0U;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (accepted[i] != 0U)
-      {
-        reconstructed_observations += reconstructed_ground[i] != 0U ? 1U : 0U;
-      }
-    }
-    if (eligible_observations == 0U)
-    {
-      throw std::runtime_error("Ground propagation produced no observations");
-    }
-    const double observation_ratio =
-        static_cast<double>(reconstructed_observations) /
-        static_cast<double>(eligible_observations);
-    // Sparse LiDAR samples can split fitted floor pixels even though the robot
-    // physically traversed the space between them. Add the gap-bounded robot
-    // corridor only to the connectivity metric; it never creates elevation,
-    // slope, free-space, or obstacle evidence.
-    std::vector<std::uint8_t> connectivity_mask = reconstructed_ground;
-    const std::vector<std::uint8_t> trajectory_connectivity =
-        buildTrajectoryMask(trajectory_xy,
-                            parameters_.trajectory_seed_radius,
-                            parameters_.maximum_trajectory_gap,
-                            geometry);
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      connectivity_mask[i] =
-          connectivity_mask[i] != 0U || trajectory_connectivity[i] != 0U
-              ? 1U
-              : 0U;
-    }
-    const BinaryMaskMetrics ground_quality =
-        measureBinaryMaskQuality(connectivity_mask, geometry);
-    ROS_INFO("Terrain ground quality: bbox_coverage=%.1f%% "
-             "fit_retention=%.1f%% trajectory_anchored_component=%.1f%% "
-             "(%zu/%zu cells)",
-             100.0 * ground_quality.coverage_ratio,
-             100.0 * observation_ratio,
-             100.0 * ground_quality.largest_component_ratio,
-             ground_quality.largest_component_cells,
-             ground_quality.active_cells);
-    if (observation_ratio < parameters_.minimum_ground_observation_ratio ||
-        ground_quality.largest_component_ratio <
-            parameters_.minimum_largest_ground_component_ratio)
-    {
-      std::ostringstream error;
-      error << "Terrain ground quality failed: fit_retention="
-            << std::fixed
-            << std::setprecision(1)
-            << 100.0 * observation_ratio << "% (need "
-            << 100.0 * parameters_.minimum_ground_observation_ratio
-            << "%), trajectory_anchored_component="
-            << 100.0 * ground_quality.largest_component_ratio << "% (need "
-            << 100.0 * parameters_.minimum_largest_ground_component_ratio
-            << "%)";
-      throw std::runtime_error(error.str());
-    }
-    terrain->cost = buildSlopeCostLayer(
-        terrain->slope_deg, geometry, parameters_.cost);
-
-    // Plane fitting intentionally refuses weak cells. Obstacle extraction can
-    // still use a nearby value from the accepted, step-safe ground surface so
-    // isolated 5 cm fit holes do not suppress an entire obstacle column.
-    std::vector<float> obstacle_ground_reference = terrain->elevation;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (!isKnown(obstacle_ground_reference[i]) &&
-          isKnown(raw_elevation[i]))
-      {
-        obstacle_ground_reference[i] = raw_elevation[i];
-      }
+    // Bounded free completion only around measured/validated ground. The wall
+    // recovery reference is deliberately absent from this mask.
+    expanded=ground;
+    const int radius=std::floor(parameters_.ground_free_dilation/geometry.resolution+1e-9);
+    for (int y=0;y<static_cast<int>(geometry.height);++y)
+      for (int x=0;x<static_cast<int>(geometry.width);++x) if (ground[cellIndex(x,y,geometry)])
+        for (int dy=-radius;dy<=radius;++dy) for (int dx=-radius;dx<=radius;++dx)
+          if (dx*dx+dy*dy<=radius*radius && inside(x+dx,y+dy,geometry))
+            expanded[cellIndex(x+dx,y+dy,geometry)]=1;
+    const auto walked=buildTrajectoryMask(path,parameters_.trajectory_free_radius,
+                                         parameters_.maximum_trajectory_gap,geometry);
+    dilateBinaryMaskMetric(obstacles,&blocked,geometry,parameters_.obstacle_inflation_m);
+    occupancy->assign(count,kUnknownImage);
+    for (std::size_t i=0;i<count;++i) {
+      if (expanded[i] || walked[i]) (*occupancy)[i]=kFreeImage;
+      if (result.unresolved_vertical[i]) (*occupancy)[i]=kUnknownImage;
+      if (blocked[i]) (*occupancy)[i]=kOccupiedImage; // measured obstacle always wins
     }
 
-    std::vector<int> obstacle_count(count, 0);
-    for (const auto& point : cloud.points)
-    {
-      if (!pcl::isFinite(point))
-      {
-        continue;
-      }
-      int x = 0;
-      int y = 0;
-      if (!pointToCell(point.x, point.y, geometry, &x, &y))
-      {
-        continue;
-      }
-      const float ground = nearestGround(
-          x, y, obstacle_ground_reference, geometry);
-      if (!isKnown(ground))
-      {
-        continue;
-      }
-      const double relative_height = point.z - ground;
-      if (isObstacleHeight(relative_height,
-                           parameters_.obstacle_min_height,
-                           parameters_.obstacle_max_height))
-      {
-        ++obstacle_count[cellIndex(x, y, geometry)];
+    // Flood fill actual PGM free cells, never "known" cells: occupied is known too.
+    std::vector<std::uint8_t> reached(count,0);
+    std::queue<std::size_t> queue;
+    int start_x,start_y;
+    if (pointToCell(path.front().x,path.front().y,geometry,&start_x,&start_y)) {
+      const auto start=cellIndex(start_x,start_y,geometry);
+      if ((*occupancy)[start]==kFreeImage) { reached[start]=1; queue.push(start); }
+    }
+    while (!queue.empty()) {
+      const auto i=queue.front(); queue.pop();
+      const int x=i%geometry.width,y=i/geometry.width;
+      for (int dy=-1;dy<=1;++dy) for(int dx=-1;dx<=1;++dx) {
+        if ((!dx&&!dy) || !inside(x+dx,y+dy,geometry)) continue;
+        const auto n=cellIndex(x+dx,y+dy,geometry);
+        if (reached[n] || (*occupancy)[n]!=kFreeImage) continue;
+        if (dx&&dy && ((*occupancy)[cellIndex(x+dx,y,geometry)]!=kFreeImage ||
+                      (*occupancy)[cellIndex(x,y+dy,geometry)]!=kFreeImage)) continue;
+        reached[n]=1; queue.push(n);
       }
     }
-
-    std::vector<std::uint8_t> free_mask(count, 0);
-    std::vector<std::uint8_t> obstacle_mask(count, 0);
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      free_mask[i] = isKnown(terrain->elevation[i]) ? 1 : 0;
-      obstacle_mask[i] = obstacle_count[i] >= parameters_.min_obstacle_points ? 1 : 0;
+    std::size_t on_ground=0,free=0,reachable=0;
+    for (const auto& point:path) {
+      int x,y; if (!pointToCell(point.x,point.y,geometry,&x,&y)) continue;
+      const auto i=cellIndex(x,y,geometry);
+      on_ground+=ground[i]!=0; free+=(*occupancy)[i]==kFreeImage; reachable+=reached[i]!=0;
     }
-    // Unknown terrain is fail-closed. Free-space evidence must never dilate
-    // across a wall edge, rejected step, or >35 degree surface.
-    std::vector<std::uint8_t> trajectory_free_evidence(count, 0U);
-    std::vector<std::uint8_t> obstacle_inflated;
-    const std::vector<std::uint8_t> all_trajectory_mask =
-        buildTrajectoryMask(trajectory_xy,
-                            parameters_.trajectory_free_radius,
-                            parameters_.maximum_trajectory_gap,
-                            geometry);
-    // The complete recorded path is direct free-space evidence because the
-    // robot physically occupied it. Long odometry jumps are not connected.
-    // This evidence can only fill unknown cells: baseline obstacles survive,
-    // and measured terrain obstacles are applied afterward.
-    applyTrajectoryFreeEvidence(all_trajectory_mask,
-                                &trajectory_free_evidence);
-    dilateBinaryMaskMetric(obstacle_mask,
-                           &obstacle_inflated,
-                           geometry,
-                           parameters_.obstacle_inflation_m);
-
-    *occupancy = mergeOccupancyEvidence(
-        baseline_occupancy,
-        free_mask,
-        trajectory_free_evidence,
-        obstacle_inflated,
-        kUnknownImage,
-        kFreeImage,
-        kOccupiedImage);
-
-    std::size_t baseline_known = 0U;
-    std::size_t baseline_known_preserved = 0U;
-    std::size_t baseline_free = 0U;
-    std::size_t ground_on_baseline_free = 0U;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (!baseline_occupancy.empty() &&
-          baseline_occupancy[i] != kUnknownImage)
-      {
-        ++baseline_known;
-        baseline_known_preserved +=
-            (*occupancy)[i] != kUnknownImage ? 1U : 0U;
-      }
-      if (!baseline_occupancy.empty() &&
-          baseline_occupancy[i] == kFreeImage)
-      {
-        ++baseline_free;
-        ground_on_baseline_free += reconstructed_ground[i] != 0U ? 1U : 0U;
-      }
-    }
-    if (!baseline_occupancy.empty() &&
-        (baseline_known == 0U || baseline_free == 0U ||
-         baseline_known_preserved != baseline_known))
-    {
-      throw std::runtime_error(
-          "Legacy occupancy baseline is empty or was not preserved completely");
-    }
-    if (!baseline_occupancy.empty())
-    {
-      const double baseline_ground_ratio =
-          static_cast<double>(ground_on_baseline_free) /
-          static_cast<double>(baseline_free);
-      ROS_INFO("Terrain baseline quality: reconstructed_ground/free=%.1f%% "
-               "known_preserved=%zu/%zu",
-               100.0 * baseline_ground_ratio,
-               baseline_known_preserved,
-               baseline_known);
-      if (baseline_ground_ratio <
-          parameters_.minimum_ground_to_baseline_free_ratio)
-      {
-        std::ostringstream error;
-        error << "Terrain ground covers only " << std::fixed
-              << std::setprecision(1) << 100.0 * baseline_ground_ratio
-              << "% of legacy free cells; require at least "
-              << 100.0 * parameters_.minimum_ground_to_baseline_free_ratio
-              << "%";
-        throw std::runtime_error(error.str());
-      }
-    }
-
-    std::size_t trajectory_corridor_cells = 0U;
-    std::size_t known_trajectory_corridor_cells = 0U;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-      if (all_trajectory_mask[i] != 0U)
-      {
-        ++trajectory_corridor_cells;
-        known_trajectory_corridor_cells +=
-            (*occupancy)[i] != kUnknownImage ? 1U : 0U;
-      }
-    }
-    if (trajectory_corridor_cells == 0U)
-    {
-      throw std::runtime_error("Trajectory corridor does not intersect map geometry");
-    }
-    const double trajectory_corridor_ratio =
-        static_cast<double>(known_trajectory_corridor_cells) /
-        static_cast<double>(trajectory_corridor_cells);
-    ROS_INFO("Terrain trajectory corridor known coverage: %.1f%% (%zu/%zu)",
-             100.0 * trajectory_corridor_ratio,
-             known_trajectory_corridor_cells,
-             trajectory_corridor_cells);
-    if (trajectory_corridor_ratio <
-        parameters_.minimum_trajectory_corridor_known_ratio)
-    {
-      std::ostringstream error;
-      error << "Known occupancy covers " << std::fixed << std::setprecision(1)
-            << 100.0 * trajectory_corridor_ratio
-            << "% of driven corridor; require at least "
-            << 100.0 * parameters_.minimum_trajectory_corridor_known_ratio
-            << "%";
-      throw std::runtime_error(error.str());
-    }
-
-    ground_diagnostic->header.frame_id = "map";
-    obstacle_diagnostic->header.frame_id = "map";
-    for (int y = 0; y < static_cast<int>(geometry.height); ++y)
-    {
-      for (int x = 0; x < static_cast<int>(geometry.width); ++x)
-      {
-        const std::size_t index = cellIndex(x, y, geometry);
-        const float world_x = static_cast<float>(
-            geometry.origin_x + (x + 0.5) * geometry.resolution);
-        const float world_y = static_cast<float>(
-            geometry.origin_y + (y + 0.5) * geometry.resolution);
-        if (isKnown(terrain->elevation[index]))
-        {
-          pcl::PointXYZI point;
-          point.x = world_x;
-          point.y = world_y;
-          point.z = terrain->elevation[index];
-          point.intensity = isKnown(terrain->slope_deg[index])
-                                ? terrain->slope_deg[index]
-                                : -1.0F;
-          ground_diagnostic->push_back(point);
-        }
-        if (obstacle_mask[index])
-        {
-          pcl::PointXYZI point;
-          point.x = world_x;
-          point.y = world_y;
-          point.z = isKnown(terrain->elevation[index])
-                        ? terrain->elevation[index] +
-                              static_cast<float>(parameters_.obstacle_min_height)
-                        : 0.0F;
-          point.intensity = static_cast<float>(obstacle_count[index]);
-          obstacle_diagnostic->push_back(point);
-        }
-      }
-    }
-    ROS_INFO("Terrain reconstruction: ground_cells=%zu obstacle_cells=%zu",
-             ground_cells, obstacle_diagnostic->size());
-  }
-
-  void fitTerrainPlanes(const std::vector<float>& raw_elevation,
-                        const std::vector<std::vector<float>>& samples,
-                        const GridGeometry& geometry,
-                        TerrainGrid* terrain) const
-  {
-    const int radius = static_cast<int>(
-        std::ceil(parameters_.plane_radius / geometry.resolution));
-    const double max_slope = parameters_.max_ground_slope_deg;
-    for (int center_y = 0; center_y < static_cast<int>(geometry.height); ++center_y)
-    {
-      for (int center_x = 0; center_x < static_cast<int>(geometry.width); ++center_x)
-      {
-        const std::size_t center = cellIndex(center_x, center_y, geometry);
-        if (!isKnown(raw_elevation[center]))
-        {
-          continue;
-        }
-
-        std::vector<Eigen::Vector3d> observations;
-        for (int dy = -radius; dy <= radius; ++dy)
-        {
-          for (int dx = -radius; dx <= radius; ++dx)
-          {
-            if (dx * dx + dy * dy > radius * radius)
-            {
-              continue;
-            }
-            const int x = center_x + dx;
-            const int y = center_y + dy;
-            if (!inside(x, y, geometry))
-            {
-              continue;
-            }
-            const float z = raw_elevation[cellIndex(x, y, geometry)];
-            if (isKnown(z))
-            {
-              observations.emplace_back(dx * geometry.resolution,
-                                        dy * geometry.resolution,
-                                        z);
-            }
-          }
-        }
-        if (observations.size() <
-            static_cast<std::size_t>(parameters_.plane_min_cells))
-        {
-          continue;
-        }
-
-        Eigen::Vector3d model = Eigen::Vector3d::Zero();
-        std::vector<double> weights(observations.size(), 1.0);
-        bool solved = true;
-        for (int iteration = 0; iteration < 3; ++iteration)
-        {
-          Eigen::Matrix3d normal = Eigen::Matrix3d::Zero();
-          Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
-          for (std::size_t i = 0; i < observations.size(); ++i)
-          {
-            const Eigen::Vector3d row(
-                observations[i].x(), observations[i].y(), 1.0);
-            normal += weights[i] * row * row.transpose();
-            rhs += weights[i] * row * observations[i].z();
-          }
-          Eigen::LDLT<Eigen::Matrix3d> decomposition(normal);
-          if (decomposition.info() != Eigen::Success)
-          {
-            solved = false;
-            break;
-          }
-          model = decomposition.solve(rhs);
-          if (!model.allFinite())
-          {
-            solved = false;
-            break;
-          }
-          for (std::size_t i = 0; i < observations.size(); ++i)
-          {
-            const double predicted = model.x() * observations[i].x() +
-                                     model.y() * observations[i].y() + model.z();
-            const double residual = std::fabs(observations[i].z() - predicted);
-            weights[i] = residual <= parameters_.plane_huber_m
-                             ? 1.0
-                             : parameters_.plane_huber_m / residual;
-          }
-        }
-        if (!solved)
-        {
-          continue;
-        }
-
-        double squared_error = 0.0;
-        for (const auto& observation : observations)
-        {
-          const double predicted = model.x() * observation.x() +
-                                   model.y() * observation.y() + model.z();
-          const double residual = observation.z() - predicted;
-          squared_error += residual * residual;
-        }
-        const double rmse =
-            std::sqrt(squared_error / static_cast<double>(observations.size()));
-        const double slope =
-            std::atan(std::hypot(model.x(), model.y())) * 180.0 / kPi;
-        if (!std::isfinite(rmse) || !std::isfinite(slope) ||
-            rmse > parameters_.max_plane_rmse || slope > max_slope)
-        {
-          continue;
-        }
-
-        double maximum_step = 0.0;
-        for (int dy = -1; dy <= 1; ++dy)
-        {
-          for (int dx = -1; dx <= 1; ++dx)
-          {
-            if (dx == 0 && dy == 0)
-            {
-              continue;
-            }
-            const int x = center_x + dx;
-            const int y = center_y + dy;
-            if (inside(x, y, geometry))
-            {
-              const float neighbor = raw_elevation[cellIndex(x, y, geometry)];
-              if (isKnown(neighbor))
-              {
-                maximum_step = std::max(
-                    maximum_step,
-                    std::fabs(static_cast<double>(raw_elevation[center] - neighbor)));
-              }
-            }
-          }
-        }
-
-        terrain->elevation[center] = static_cast<float>(model.z());
-        terrain->slope_deg[center] = static_cast<float>(slope);
-        terrain->roughness[center] = static_cast<float>(rmse);
-        terrain->step[center] = static_cast<float>(maximum_step);
-        const double support = std::min(
-            1.0,
-            static_cast<double>(observations.size()) /
-                std::max(4.0,
-                         kPi * parameters_.plane_radius *
-                             parameters_.plane_radius /
-                             (geometry.resolution * geometry.resolution) * 0.5));
-        const double sample_support =
-            std::min(1.0, static_cast<double>(samples[center].size()) / 3.0);
-        const double confidence =
-            std::max(0.0,
-                     std::min(1.0,
-                              support * sample_support *
-                                  std::exp(-rmse / 0.05)));
-        terrain->confidence[center] = static_cast<std::uint8_t>(
-            std::lround(confidence * 100.0));
-      }
-    }
-  }
-
-  float nearestGround(int center_x,
-                      int center_y,
-                      const std::vector<float>& ground_reference,
-                      const GridGeometry& geometry) const
-  {
-    if (ground_reference.size() != geometry.cellCount())
-    {
-      throw std::invalid_argument("Ground-reference geometry mismatch");
-    }
-    const std::size_t center = cellIndex(center_x, center_y, geometry);
-    if (isKnown(ground_reference[center]))
-    {
-      return ground_reference[center];
-    }
-    const int radius = static_cast<int>(
-        std::ceil(parameters_.obstacle_ground_search /
-                  geometry.resolution));
-    float nearest = std::numeric_limits<float>::quiet_NaN();
-    int best_squared = std::numeric_limits<int>::max();
-    std::vector<Eigen::Vector3d> observations;
-    for (int dy = -radius; dy <= radius; ++dy)
-    {
-      for (int dx = -radius; dx <= radius; ++dx)
-      {
-        const int squared = dx * dx + dy * dy;
-        if (std::sqrt(static_cast<double>(squared)) *
-                    geometry.resolution >
-                parameters_.obstacle_ground_search)
-        {
-          continue;
-        }
-        const int x = center_x + dx;
-        const int y = center_y + dy;
-        if (!inside(x, y, geometry))
-        {
-          continue;
-        }
-        const float value = ground_reference[cellIndex(x, y, geometry)];
-        if (isKnown(value))
-        {
-          observations.emplace_back(dx * geometry.resolution,
-                                    dy * geometry.resolution,
-                                    value);
-          if (squared < best_squared)
-          {
-            nearest = value;
-            best_squared = squared;
-          }
-        }
-      }
-    }
-    // One-cell holes need no extrapolation and remain bounded by the same
-    // adjacent-rise rule used for accepted ground growth.
-    if (best_squared <= 1)
-    {
-      return nearest;
-    }
-    if (observations.size() <
-        static_cast<std::size_t>(parameters_.plane_min_cells))
-    {
-      return std::numeric_limits<float>::quiet_NaN();
-    }
-
-    Eigen::Vector3d model = Eigen::Vector3d::Zero();
-    std::vector<double> weights(observations.size(), 1.0);
-    for (int iteration = 0; iteration < 3; ++iteration)
-    {
-      Eigen::Matrix3d normal = Eigen::Matrix3d::Zero();
-      Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
-      for (std::size_t i = 0; i < observations.size(); ++i)
-      {
-        const Eigen::Vector3d row(
-            observations[i].x(), observations[i].y(), 1.0);
-        normal += weights[i] * row * row.transpose();
-        rhs += weights[i] * row * observations[i].z();
-      }
-      Eigen::LDLT<Eigen::Matrix3d> decomposition(normal);
-      if (decomposition.info() != Eigen::Success)
-      {
-        return std::numeric_limits<float>::quiet_NaN();
-      }
-      model = decomposition.solve(rhs);
-      if (!model.allFinite())
-      {
-        return std::numeric_limits<float>::quiet_NaN();
-      }
-      for (std::size_t i = 0; i < observations.size(); ++i)
-      {
-        const double predicted = model.x() * observations[i].x() +
-                                 model.y() * observations[i].y() + model.z();
-        const double residual = std::fabs(observations[i].z() - predicted);
-        weights[i] = residual <= parameters_.plane_huber_m
-                         ? 1.0
-                         : parameters_.plane_huber_m / residual;
-      }
-    }
-    double squared_error = 0.0;
-    for (const auto& observation : observations)
-    {
-      const double predicted = model.x() * observation.x() +
-                               model.y() * observation.y() + model.z();
-      const double residual = observation.z() - predicted;
-      squared_error += residual * residual;
-    }
-    const double rmse =
-        std::sqrt(squared_error / static_cast<double>(observations.size()));
-    const double slope =
-        std::atan(std::hypot(model.x(), model.y())) * 180.0 / kPi;
-    if (!std::isfinite(rmse) || !std::isfinite(slope) ||
-        rmse > parameters_.max_plane_rmse ||
-        slope > parameters_.max_ground_slope_deg)
-    {
-      return std::numeric_limits<float>::quiet_NaN();
-    }
-    return static_cast<float>(model.z());
+    const double ground_ratio=double(on_ground)/path.size();
+    const double free_ratio=double(free)/path.size();
+    const double reachable_ratio=double(reachable)/path.size();
+    quality_report_="reconstruction_revision: 2\n";
+    std::ostringstream report;
+    report << std::setprecision(10) << "ground_cells: " << ground_diagnostic->size()
+           << "\nrecovered_wall_cells: " << result.recovered_wall_cells
+           << "\nunresolved_vertical_cells: " << result.unresolved_vertical_cells
+           << "\nmeasured_step_cells: " << std::count(result.measured_step.begin(),result.measured_step.end(),1)
+           << "\ntrajectory_points: " << path.size()
+           << "\ntrajectory_ground_ratio: " << ground_ratio
+           << "\ntrajectory_free_ratio: " << free_ratio
+           << "\ntrajectory_reachable_ratio: " << reachable_ratio << "\n";
+    quality_report_+=report.str();
+    ROS_INFO_STREAM("Terrain export quality:\n" << quality_report_);
+    if (ground_ratio<parameters_.minimum_trajectory_ground_ratio ||
+        free_ratio<parameters_.minimum_trajectory_free_ratio ||
+        reachable_ratio<parameters_.minimum_trajectory_reachable_ratio)
+      throw std::runtime_error("Terrain quality failed: insufficient ground/free/reachable trajectory; "
+                               "inspect measured obstacles or rescan gaps. Original map retained.");
   }
 
   void writeOutputs(
@@ -1960,14 +1152,25 @@ private:
     writeFloatLayer((stage / step).string(), terrain.step);
     writeUint8Layer((stage / cost).string(), terrain.cost);
     writeUint8Layer((stage / confidence).string(), terrain.confidence);
-    if (pcl::io::savePCDFileBinaryCompressed((stage / ground_pcd).string(),
-                                             ground_diagnostic) != 0 ||
-        pcl::io::savePCDFileBinaryCompressed((stage / obstacle_pcd).string(),
-                                             obstacle_diagnostic) != 0)
-    {
-      throw std::runtime_error("Failed writing terrain diagnostic PCD files");
-    }
+    auto save_cloud=[](const std::string& path, const pcl::PointCloud<pcl::PointXYZI>& cloud) {
+      if (cloud.empty()) {
+        // PCL rejects an empty cloud; an obstacle-free map is nevertheless valid.
+        std::ofstream output(path, std::ios::binary);
+        output << "# .PCD v0.7\nVERSION 0.7\nFIELDS x y z intensity\nSIZE 4 4 4 4\n"
+                  "TYPE F F F F\nCOUNT 1 1 1 1\nWIDTH 0\nHEIGHT 1\n"
+                  "VIEWPOINT 0 0 0 1 0 0 0\nPOINTS 0\nDATA binary\n";
+        output.close();
+        if (!output) throw std::runtime_error("Failed writing empty diagnostic PCD");
+      } else if (pcl::io::savePCDFileBinaryCompressed(path,cloud)!=0)
+        throw std::runtime_error("Failed writing terrain diagnostic PCD: "+path);
+    };
+    save_cloud((stage/ground_pcd).string(),ground_diagnostic);
+    save_cloud((stage/obstacle_pcd).string(),obstacle_diagnostic);
     writePreview((stage / preview).string(), terrain, occupancy);
+    std::ofstream quality((stage/"terrain_quality.yaml").string());
+    quality << quality_report_;
+    quality.close();
+    if (!quality) throw std::runtime_error("Failed writing terrain quality report");
 
     TerrainMetadata metadata;
     metadata.format = "go2_terrain_2p5d";
@@ -1983,26 +1186,21 @@ private:
     metadata.step = {step, "float32_le", "m"};
     metadata.cost = {cost, "uint8", "cost"};
     metadata.confidence = {confidence, "uint8", "percent"};
-    const std::vector<std::pair<std::string, double>> exported_parameters = {
-        {"ground_max_slope_deg", parameters_.max_ground_slope_deg},
+    std::vector<std::pair<std::string, double>> exported_parameters = {
+        {"reconstruction_revision", 2.0},
+        {"ground_max_slope_deg", parameters_.surface.max_ground_slope_deg},
         {"obstacle_min_height_m", parameters_.obstacle_min_height},
         {"obstacle_max_height_m", parameters_.obstacle_max_height},
         {"trajectory_free_radius_m", parameters_.trajectory_free_radius},
         {"obstacle_inflation_m", parameters_.obstacle_inflation_m},
-        {"preserve_existing_map",
-         parameters_.preserve_existing_map ? 1.0 : 0.0},
-        {"maximum_reanchor_height_from_initial_m",
-         parameters_.maximum_reanchor_height_from_initial},
-        {"minimum_traced_trajectory_ratio",
-         parameters_.minimum_traced_trajectory_ratio},
-        {"minimum_ground_observation_ratio",
-         parameters_.minimum_ground_observation_ratio},
-        {"minimum_largest_ground_component_ratio",
-         parameters_.minimum_largest_ground_component_ratio},
-        {"minimum_ground_to_baseline_free_ratio",
-         parameters_.minimum_ground_to_baseline_free_ratio},
-        {"minimum_trajectory_corridor_known_ratio",
-         parameters_.minimum_trajectory_corridor_known_ratio},
+        {"preserve_existing_map", 0.0},
+        {"minimum_trajectory_ground_ratio", parameters_.minimum_trajectory_ground_ratio},
+        {"minimum_trajectory_free_ratio", parameters_.minimum_trajectory_free_ratio},
+        {"minimum_trajectory_reachable_ratio", parameters_.minimum_trajectory_reachable_ratio},
+        {"wall_search_radius_m", parameters_.surface.wall_search_radius_m},
+        {"wall_max_nearest_m", parameters_.surface.wall_max_nearest_m},
+        {"wall_min_inlier_ratio", parameters_.surface.wall_min_inlier_ratio},
+        {"ground_free_dilation_m", parameters_.ground_free_dilation},
         {"flat_slope_deg", parameters_.cost.flat_slope_deg},
         {"lethal_slope_deg", parameters_.cost.lethal_slope_deg},
         {"minimum_slope_cost", parameters_.cost.minimum_cost},
@@ -2010,6 +1208,39 @@ private:
         {"slope_cost_dilation_m", parameters_.cost.dilation_m},
         {"minimum_lethal_cluster_cells",
          static_cast<double>(parameters_.cost.minimum_lethal_cluster_cells)}};
+    exported_parameters.emplace_back("surface_candidate_percentile", parameters_.surface.candidate_percentile);
+    exported_parameters.emplace_back("surface_seed_radius_m", parameters_.surface.seed_radius_m);
+    exported_parameters.emplace_back("surface_seed_height_tolerance_m", parameters_.surface.seed_height_tolerance_m);
+    exported_parameters.emplace_back("surface_trusted_seed_height_tolerance_m", parameters_.surface.trusted_seed_height_tolerance_m);
+    exported_parameters.emplace_back("surface_pmf_max_window_size", parameters_.surface.pmf_max_window_size);
+    exported_parameters.emplace_back("surface_pmf_slope", parameters_.surface.pmf_slope);
+    exported_parameters.emplace_back("surface_pmf_initial_distance_m", parameters_.surface.pmf_initial_distance_m);
+    exported_parameters.emplace_back("surface_pmf_max_distance_m", parameters_.surface.pmf_max_distance_m);
+    exported_parameters.emplace_back("surface_pmf_base", parameters_.surface.pmf_base);
+    exported_parameters.emplace_back("surface_pmf_exponential", parameters_.surface.pmf_exponential);
+    exported_parameters.emplace_back("surface_validation_radius_m", parameters_.surface.validation_radius_m);
+    exported_parameters.emplace_back("surface_validation_min_candidates", parameters_.surface.validation_min_candidates);
+    exported_parameters.emplace_back("surface_plane_inlier_tolerance_m", parameters_.surface.plane_inlier_tolerance_m);
+    exported_parameters.emplace_back("surface_plane_min_inlier_ratio", parameters_.surface.plane_min_inlier_ratio);
+    exported_parameters.emplace_back("surface_plane_min_spread_m", parameters_.surface.plane_min_spread_m);
+    exported_parameters.emplace_back("surface_candidate_plane_tolerance_m", parameters_.surface.candidate_plane_tolerance_m);
+    exported_parameters.emplace_back("surface_plane_max_rmse_m", parameters_.surface.plane_max_rmse_m);
+    exported_parameters.emplace_back("surface_max_ground_slope_deg", parameters_.surface.max_ground_slope_deg);
+    exported_parameters.emplace_back("surface_connect_radius_m", parameters_.surface.connect_radius_m);
+    exported_parameters.emplace_back("surface_connection_plane_tolerance_m", parameters_.surface.connection_plane_tolerance_m);
+    exported_parameters.emplace_back("surface_connection_max_normal_delta_deg", parameters_.surface.connection_max_normal_delta_deg);
+    exported_parameters.emplace_back("surface_max_ground_step_m", parameters_.surface.max_ground_step_m);
+    exported_parameters.emplace_back("surface_surface_fit_radius_m", parameters_.surface.surface_fit_radius_m);
+    exported_parameters.emplace_back("surface_surface_observation_radius_m", parameters_.surface.surface_observation_radius_m);
+    exported_parameters.emplace_back("surface_surface_gap_fill_radius_m", parameters_.surface.surface_gap_fill_radius_m);
+    exported_parameters.emplace_back("surface_surface_min_candidates", parameters_.surface.surface_min_candidates);
+    exported_parameters.emplace_back("surface_surface_min_component_cells", parameters_.surface.surface_min_component_cells);
+    exported_parameters.emplace_back("surface_surface_min_component_fraction", parameters_.surface.surface_min_component_fraction);
+    exported_parameters.emplace_back("surface_min_connected_ground_cells", parameters_.surface.min_connected_ground_cells);
+    exported_parameters.emplace_back("surface_wall_search_radius_m", parameters_.surface.wall_search_radius_m);
+    exported_parameters.emplace_back("surface_wall_max_nearest_m", parameters_.surface.wall_max_nearest_m);
+    exported_parameters.emplace_back("surface_wall_min_inlier_ratio", parameters_.surface.wall_min_inlier_ratio);
+    exported_parameters.emplace_back("surface_wall_min_ground_cells", parameters_.surface.wall_min_ground_cells);
     writeTerrainMetadata(
         (stage / "terrain_2p5d.yaml").string(),
         metadata,
@@ -2021,7 +1252,7 @@ private:
 
     const std::vector<std::string> checksummed = {
         map_yaml, map_pgm, elevation, slope, roughness, step, cost, confidence,
-        ground_pcd, obstacle_pcd, preview, "terrain_2p5d.yaml"};
+        ground_pcd, obstacle_pcd, preview, "terrain_quality.yaml", "terrain_2p5d.yaml"};
     std::ofstream checksum_output((stage / checksums).string(), std::ios::trunc);
     if (!checksum_output)
     {
@@ -2127,6 +1358,7 @@ private:
         "terrain_ground.pcd",
         "terrain_obstacles.pcd",
         "terrain_preview.ppm",
+        "terrain_quality.yaml",
         "terrain_2p5d.yaml",
         boost::filesystem::path(input_pcd_).filename().string(),
         boost::filesystem::path(trajectory_pcd_).filename().string(),
@@ -2186,12 +1418,10 @@ private:
         "terrain_ground.pcd",
         "terrain_obstacles.pcd",
         "terrain_preview.ppm",
+        "terrain_quality.yaml",
         "terrain_checksums.sha256",
         "terrain_2p5d.yaml"};
-    for (const auto& file : files)
-    {
-      atomicReplace(stage / file, destination / file);
-    }
+    commitExportFiles(stage, destination, files);
   }
 
   ros::NodeHandle private_nh_;
@@ -2202,6 +1432,7 @@ private:
   std::string input_map_yaml_;
   std::string mapping_snapshot_;
   ExportParameters parameters_;
+  std::string quality_report_;
 };
 
 }  // namespace go2_terrain

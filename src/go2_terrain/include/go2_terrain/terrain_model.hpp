@@ -94,6 +94,7 @@ struct GroundPlaneEstimate {
   double slope_deg = std::numeric_limits<double>::quiet_NaN();
   double rmse_m = std::numeric_limits<double>::quiet_NaN();
   std::size_t sample_count = 0U;
+  std::size_t candidate_sample_count = 0U;
 };
 
 inline const char* groundPlaneFitStatusName(GroundPlaneFitStatus status) {
@@ -260,6 +261,23 @@ inline TerrainFrameHealthClass classifyTerrainFrameHealth(
     return TerrainFrameHealthClass::kSoftGeometryFailure;
   }
   return TerrainFrameHealthClass::kHealthy;
+}
+
+// Optional short hold for isolated finite height outliers. It cannot open a
+// closed gate, replace missing geometric evidence, or extend its own deadline.
+// Call again from the health timer so a stalled input callback cannot prolong it.
+inline bool canHoldTerrainHeightOutlier(
+    const GroundPlaneEstimate& plane, bool current_evidence_good,
+    bool gate_open, double last_healthy_age_sec, double maximum_hold_sec) {
+  const bool height_outlier =
+      !plane.valid &&
+      (plane.status == GroundPlaneFitStatus::kSensorHeightBelowMinimum ||
+       plane.status == GroundPlaneFitStatus::kSensorHeightAboveMaximum);
+  return height_outlier && std::isfinite(plane.sensor_height_m) &&
+         std::isfinite(plane.rmse_m) && current_evidence_good && gate_open &&
+         std::isfinite(last_healthy_age_sec) && last_healthy_age_sec >= 0.0 &&
+         std::isfinite(maximum_hold_sec) && maximum_hold_sec > 0.0 &&
+         last_healthy_age_sec < maximum_hold_sec;
 }
 
 struct SteepSurfaceParameters {
@@ -685,10 +703,62 @@ inline GroundPlaneEstimate estimateConnectedGroundPlane(
 
   GroundPlaneEstimate estimate;
   estimate.sample_count = largest_component.size();
+  estimate.candidate_sample_count = largest_component.size();
   if (largest_component.size() <
       static_cast<std::size_t>(parameters.minimum_connected_samples)) {
     estimate.status = GroundPlaneFitStatus::kInsufficientConnectedSamples;
     return estimate;
+  }
+
+  // Huber IRLS started from least squares can still tilt the floor towards a
+  // cluster of non-floor returns. Establish a measured majority consensus
+  // first; never add cells, bridge gaps, or prefer the nominal standing height.
+  // Keep the original fit if there is no clear consensus so noise/curvature
+  // still reaches the existing residual and geometry rejection checks.
+  std::vector<int> consensus;
+  double best_error = std::numeric_limits<double>::infinity();
+  std::uint32_t random_state = 0x6d2b79f5U;
+  auto sample_index = [&random_state, &largest_component]() {
+    random_state = random_state * 1664525U + 1013904223U;
+    return static_cast<std::size_t>(random_state) % largest_component.size();
+  };
+  auto sample_xyz = [&geometry, &candidate_heights](int index) {
+    return Eigen::Vector3d(
+        geometry.origin_x + (index % geometry.width + 0.5) * geometry.resolution,
+        geometry.origin_y + (index / geometry.width + 0.5) * geometry.resolution,
+        candidate_heights[static_cast<std::size_t>(index)]);
+  };
+  for (int trial = 0; trial < 96; ++trial) {
+    const std::size_t i = sample_index(), j = sample_index(), k = sample_index();
+    if (i == j || i == k || j == k) continue;
+    const Eigen::Vector3d p = sample_xyz(largest_component[i]);
+    const Eigen::Vector3d q = sample_xyz(largest_component[j]);
+    const Eigen::Vector3d r = sample_xyz(largest_component[k]);
+    const Eigen::Vector3d normal = (q - p).cross(r - p);
+    if (std::fabs(normal.z()) < 1e-9) continue;
+    const double a = -normal.x() / normal.z();
+    const double b = -normal.y() / normal.z();
+    const double c = p.z() - a * p.x() - b * p.y();
+    std::vector<int> inliers;
+    double error = 0.0;
+    for (int index : largest_component) {
+      const Eigen::Vector3d s = sample_xyz(index);
+      const double residual = std::fabs(s.z() - a * s.x() - b * s.y() - c);
+      if (residual <= parameters.huber_delta_m) {
+        inliers.push_back(index);
+        error += residual * residual;
+      }
+    }
+    if (inliers.size() > consensus.size() ||
+        (inliers.size() == consensus.size() && error < best_error)) {
+      consensus.swap(inliers);
+      best_error = error;
+    }
+  }
+  if (consensus.size() >= static_cast<std::size_t>(parameters.minimum_connected_samples) &&
+      consensus.size() * 10 >= largest_component.size() * 7) {
+    largest_component.swap(consensus);
+    estimate.sample_count = largest_component.size();
   }
 
   double mean_x = 0.0;
