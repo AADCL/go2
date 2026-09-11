@@ -50,6 +50,10 @@ health:
   min_input_points: 20
   min_ground_points: 20
   minimum_connected_ground_area_m2: 0.40
+  # Health-only fallback for sparse islands of the same observed floor. A valid
+  # seed plane is mandatory; only anchored cells within 1.5 m and 3 cm of that
+  # plane count. This does not fill gaps or change costmap clearing/obstacles.
+  coplanar_support_enabled: true
   # Match the 1.20 m anchor search for the forward-tilted MID360. At 1.00 m,
   # measured floor support repeatedly alternated between seven and eight
   # 0.15 m cells during the Robot-2 turn test. Keep the area/sector minima and

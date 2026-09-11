@@ -620,6 +620,100 @@ inline bool healthyGroundCoverage(const GroundCoverageMetrics& metrics,
          metrics.covered_sectors >= parameters.minimum_covered_sectors;
 }
 
+struct CoplanarGroundSupportParameters {
+  double maximum_radius_m = 1.50;
+  double maximum_plane_distance_m = 0.03;
+  double minimum_seed_inlier_ratio = 0.80;
+};
+
+struct CoplanarGroundSupport {
+  bool valid = false;
+  GroundCoverageMetrics coverage;
+  std::size_t additional_cells = 0U;
+  double seed_inlier_ratio = 0.0;
+};
+
+// Health evidence only: sparse returns on one floor need not form one occupied
+// four-connected grid island. Count observed, anchored, coplanar cells without
+// inventing cells across gaps. This never returns a clearing/obstacle mask.
+// A valid plane from the original selected component is required, so this
+// fallback cannot rescue an invalid fit, a low pose, or a missing ground plane.
+inline CoplanarGroundSupport measureCoplanarGroundSupport(
+    const std::vector<float>& candidate_heights,
+    const std::vector<std::uint8_t>& anchored_ground,
+    const std::vector<std::uint8_t>& selected_ground,
+    const GroundPlaneEstimate& plane,
+    const GroundConnectivityParameters& geometry,
+    const GroundHealthParameters& health,
+    const CoplanarGroundSupportParameters& parameters) {
+  const std::size_t size = static_cast<std::size_t>(
+      geometry.width * geometry.height);
+  if (geometry.width <= 0 || geometry.height <= 0 ||
+      !std::isfinite(geometry.resolution) || geometry.resolution <= 0.0 ||
+      !std::isfinite(geometry.origin_x) || !std::isfinite(geometry.origin_y) ||
+      candidate_heights.size() != size || anchored_ground.size() != size ||
+      selected_ground.size() != size ||
+      !std::isfinite(parameters.maximum_radius_m) ||
+      parameters.maximum_radius_m <= 0.0 || parameters.maximum_radius_m > 1.50 ||
+      !std::isfinite(health.near_support_radius_m) ||
+      health.near_support_radius_m <= 0.0 ||
+      health.near_support_radius_m > parameters.maximum_radius_m ||
+      !std::isfinite(parameters.maximum_plane_distance_m) ||
+      parameters.maximum_plane_distance_m <= 0.0 ||
+      parameters.maximum_plane_distance_m > 0.03 ||
+      !std::isfinite(parameters.minimum_seed_inlier_ratio) ||
+      parameters.minimum_seed_inlier_ratio < 0.80 ||
+      parameters.minimum_seed_inlier_ratio > 1.0 ||
+      health.sector_count < 1 || health.sector_count > 360 ||
+      health.minimum_cells_per_sector < 1) {
+    throw std::invalid_argument("invalid coplanar ground support parameters");
+  }
+  CoplanarGroundSupport result;
+  if (!plane.valid || plane.status != GroundPlaneFitStatus::kValid ||
+      !std::isfinite(plane.a) || !std::isfinite(plane.b) ||
+      !std::isfinite(plane.c) || !std::isfinite(plane.sensor_height_m) ||
+      !std::isfinite(plane.rmse_m)) {
+    return result;
+  }
+  std::size_t seed_cells = 0U, seed_inliers = 0U;
+  std::vector<int> sector_cells(static_cast<std::size_t>(health.sector_count), 0);
+  constexpr double kPi = 3.14159265358979323846;
+  for (std::size_t i = 0; i < size; ++i) {
+    if (!anchored_ground[i] || !std::isfinite(candidate_heights[i])) continue;
+    const double x = geometry.origin_x + (i % geometry.width + 0.5) * geometry.resolution;
+    const double y = geometry.origin_y + (i / geometry.width + 0.5) * geometry.resolution;
+    const double range = std::hypot(x, y);
+    if (range > parameters.maximum_radius_m) continue;
+    const bool inlier = std::fabs(candidate_heights[i] -
+        (plane.a * x + plane.b * y + plane.c)) <= parameters.maximum_plane_distance_m;
+    if (selected_ground[i]) {
+      ++seed_cells;
+      if (inlier) ++seed_inliers;
+    }
+    if (!inlier) continue;
+    ++result.coverage.connected_cells;
+    if (!selected_ground[i]) ++result.additional_cells;
+    if (range > health.near_support_radius_m) continue;
+    ++result.coverage.near_support_cells;
+    if (range <= geometry.resolution * 0.25) continue;
+    int sector = static_cast<int>(std::floor(
+        (std::atan2(y, x) + kPi) * health.sector_count / (2.0 * kPi)));
+    sector = std::max(0, std::min(health.sector_count - 1, sector));
+    ++sector_cells[static_cast<std::size_t>(sector)];
+  }
+  const double cell_area = geometry.resolution * geometry.resolution;
+  result.coverage.connected_area_m2 = result.coverage.connected_cells * cell_area;
+  result.coverage.near_support_area_m2 = result.coverage.near_support_cells * cell_area;
+  result.coverage.covered_sectors = static_cast<int>(std::count_if(
+      sector_cells.begin(), sector_cells.end(),
+      [&health](int count) { return count >= health.minimum_cells_per_sector; }));
+  result.seed_inlier_ratio = seed_cells == 0U ? 0.0 :
+      static_cast<double>(seed_inliers) / seed_cells;
+  result.valid = seed_cells >= 12U && result.additional_cells >= 2U &&
+      result.seed_inlier_ratio >= parameters.minimum_seed_inlier_ratio;
+  return result;
+}
+
 inline GroundPlaneEstimate estimateConnectedGroundPlane(
     const std::vector<float>& candidate_heights,
     const std::vector<std::uint8_t>& connected_ground,

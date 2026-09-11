@@ -154,6 +154,7 @@ class TerrainGuard {
     pnh_.param("health/min_ground_points", min_ground_points_, 20);
     pnh_.param("health/minimum_connected_ground_area_m2",
                ground_health_.minimum_connected_area_m2, 0.60);
+    pnh_.param("health/coplanar_support_enabled", coplanar_support_enabled_, false);
     pnh_.param("health/near_support_radius_m",
                ground_health_.near_support_radius_m, 1.00);
     pnh_.param("health/minimum_near_support_area_m2",
@@ -192,6 +193,8 @@ class TerrainGuard {
     pnh_.param("health/min_rate_samples", min_rate_samples_, 3);
     pnh_.param("health/startup_grace_sec", startup_grace_sec_, 3.0);
     pnh_.param("health/low_rate_hold_sec", low_rate_hold_sec_, 1.0);
+    coplanar_support_parameters_.maximum_radius_m =
+        std::min(1.50, ground_plane_fit_.maximum_radius_m);
 
     thresholds_.no_ground_high_split_z =
         -sensor_height_ + thresholds_.max_relative_height;
@@ -243,6 +246,8 @@ class TerrainGuard {
         ground_plane_fit_.minimum_sensor_height_m <= 0.0 ||
         ground_plane_fit_.maximum_sensor_height_m <
             ground_plane_fit_.minimum_sensor_height_m ||
+        (coplanar_support_enabled_ && ground_health_.near_support_radius_m >
+            coplanar_support_parameters_.maximum_radius_m) ||
         !std::isfinite(height_outlier_hold_sec_) ||
         height_outlier_hold_sec_ < 0.0 || height_outlier_hold_sec_ > 0.30 ||
         health_hysteresis_parameters_.opening_healthy_frames < 1 ||
@@ -386,6 +391,8 @@ class TerrainGuard {
     }
     last_input_wall_ = start;
     height_outlier_held_ = false;
+    coplanar_support_used_ = false;
+    last_coplanar_support_ = go2_terrain::CoplanarGroundSupport();
     if (ground_message->header.frame_id != expected_frame_ ||
         nonground_message->header.frame_id != expected_frame_ ||
         ground_message->header.stamp.isZero()) {
@@ -487,6 +494,19 @@ class TerrainGuard {
     last_ground_plane_ = go2_terrain::estimateConnectedGroundPlane(
         candidate_heights, connected_ground, ground_connectivity_,
         ground_plane_fit_);
+    last_health_coverage_ = last_ground_coverage_;
+    if (coplanar_support_enabled_ && last_ground_plane_.valid &&
+        !go2_terrain::healthyGroundCoverage(last_ground_coverage_, ground_health_)) {
+      last_coplanar_support_ = go2_terrain::measureCoplanarGroundSupport(
+          candidate_heights, connected_ground_candidates, connected_ground,
+          last_ground_plane_, ground_connectivity_, ground_health_,
+          coplanar_support_parameters_);
+      if (last_coplanar_support_.valid && go2_terrain::healthyGroundCoverage(
+              last_coplanar_support_.coverage, ground_health_)) {
+        last_health_coverage_ = last_coplanar_support_.coverage;
+        coplanar_support_used_ = true;
+      }
+    }
     for (std::size_t index = 0; index < cells.size(); ++index) {
       cells[index].valid = connected_ground[index] != 0U;
     }
@@ -597,13 +617,13 @@ class TerrainGuard {
     const bool enough_ground_points =
         static_cast<int>(last_ground_points_) >= min_ground_points_;
     const bool enough_connected_area =
-        last_ground_coverage_.connected_area_m2 >=
+        last_health_coverage_.connected_area_m2 >=
         ground_health_.minimum_connected_area_m2;
     const bool enough_near_support =
-        last_ground_coverage_.near_support_area_m2 >=
+        last_health_coverage_.near_support_area_m2 >=
         ground_health_.minimum_near_support_area_m2;
     const bool enough_sector_coverage =
-        last_ground_coverage_.covered_sectors >=
+        last_health_coverage_.covered_sectors >=
         ground_health_.minimum_covered_sectors;
     const bool processing_within_deadline =
         last_processing_ms_ <= max_processing_ms_;
@@ -636,13 +656,13 @@ class TerrainGuard {
       frame_reason_ = "too few input points";
     } else if (static_cast<int>(last_ground_points_) < min_ground_points_) {
       frame_reason_ = "too few ground points";
-    } else if (last_ground_coverage_.connected_area_m2 <
+    } else if (last_health_coverage_.connected_area_m2 <
                ground_health_.minimum_connected_area_m2) {
       frame_reason_ = "insufficient connected ground area";
-    } else if (last_ground_coverage_.near_support_area_m2 <
+    } else if (last_health_coverage_.near_support_area_m2 <
                ground_health_.minimum_near_support_area_m2) {
       frame_reason_ = "insufficient near-field ground support";
-    } else if (last_ground_coverage_.covered_sectors <
+    } else if (last_health_coverage_.covered_sectors <
                ground_health_.minimum_covered_sectors) {
       frame_reason_ = "insufficient ground sector coverage";
     } else if (!last_ground_plane_.valid) {
@@ -808,6 +828,20 @@ class TerrainGuard {
     status.values.push_back(keyValue(
         "covered_ground_sectors",
         asString(last_ground_coverage_.covered_sectors)));
+    status.values.push_back(keyValue("coplanar_support_enabled",
+                                    coplanar_support_enabled_ ? "true" : "false"));
+    status.values.push_back(keyValue("health_support_source",
+        coplanar_support_used_ ? "observed_coplanar_cells" : "selected_component"));
+    status.values.push_back(keyValue("health_support_area_m2",
+                                    asString(last_health_coverage_.connected_area_m2)));
+    status.values.push_back(keyValue("health_near_support_area_m2",
+                                    asString(last_health_coverage_.near_support_area_m2)));
+    status.values.push_back(keyValue("health_support_sectors",
+                                    asString(last_health_coverage_.covered_sectors)));
+    status.values.push_back(keyValue("coplanar_additional_cells",
+                                    asString(last_coplanar_support_.additional_cells)));
+    status.values.push_back(keyValue("coplanar_seed_inlier_ratio",
+                                    asString(last_coplanar_support_.seed_inlier_ratio)));
     status.values.push_back(keyValue(
         "ground_plane_fit_status",
         go2_terrain::groundPlaneFitStatusName(last_ground_plane_.status)));
@@ -916,6 +950,11 @@ class TerrainGuard {
   go2_terrain::TerrainHealthHysteresisState health_hysteresis_state_;
   go2_terrain::SteepSurfaceParameters steep_surface_;
   go2_terrain::GroundCoverageMetrics last_ground_coverage_;
+  go2_terrain::GroundCoverageMetrics last_health_coverage_;
+  go2_terrain::CoplanarGroundSupportParameters coplanar_support_parameters_;
+  go2_terrain::CoplanarGroundSupport last_coplanar_support_;
+  bool coplanar_support_enabled_ = false;
+  bool coplanar_support_used_ = false;
   go2_terrain::GroundPlaneEstimate last_ground_plane_;
   go2_terrain::NongroundThresholds thresholds_;
   bool publish_debug_clouds_ = false;
