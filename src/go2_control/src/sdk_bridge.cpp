@@ -28,6 +28,7 @@
 #include <atomic>
 #include <cmath>
 #include <csignal>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -955,7 +956,8 @@ private:
     if (!sport_client_ || (idle_stop_sent_ && !stop_retry_pending_))
     {
       // No outstanding bridge motion: do not interfere with handheld control.
-      ROS_INFO("GO2 SDK bridge shutdown: already idle; no new SDK stop request");
+      std::cerr << "GO2 SDK bridge shutdown: already idle; no new SDK stop request"
+                << std::endl;
       return true;
     }
 
@@ -982,11 +984,13 @@ private:
     // Do not depend on ros::ok(), ROS timers, or simulated time during teardown.
     if (!idle_stop_sent_ || stop_retry_pending_)
     {
-      ROS_ERROR("GO2 SDK bridge shutdown: STOP UNCONFIRMED, SDK code %d; use handheld emergency stop",
-                last_move_result_.load());
+      std::cerr << "GO2 SDK bridge shutdown: STOP UNCONFIRMED, SDK code "
+                << last_move_result_.load() << "; use handheld emergency stop"
+                << std::endl;
       return false;
     }
-    ROS_INFO("GO2 SDK bridge shutdown: stop sequence complete");
+    // rosnode kill shuts rosconsole down before this destructor runs.
+    std::cerr << "GO2 SDK bridge shutdown: stop sequence complete" << std::endl;
     return true;
   }
 

@@ -17,13 +17,13 @@
 
 **快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [全部文档](docs/README.md) · [经典步态与停车修复](docs/fixes/GAIT_TF_FIX_20260911.md) · [实时地形检查调整](docs/fixes/TERRAIN_RELAXED_CHECKS_20260911.md) · [第三方版本](THIRD_PARTY.md)
 
-> 当前为 `unitree-orin-nano` 分支，运行代码基线是 `nano-tested-20260911`（`70f5cbe`），包含 Nano 适配、地图导出更新、步态/停车修复和实时地形检查调整。后续文档整理不改变这份运行代码；整理前的完整版本仍可通过该标签查看。
+> 当前为 Nano 的 `codex/nano-shutdown-stop-20260912` 修复分支，保留第二条狗已部署的地面检查优化，并加入正常退出停车修复。原已实测快照仍保留在 `nano-tested-20260911`（`70f5cbe`）；本次退出步态仍需现场复测。
 
 第二条狗的日常操作从 [启动手册](STARTUP_GUIDE.md) 开始。`docs/deployment/` 和 `docs/releases/` 保留各次部署与发布时的状态，其中机器狗 1 的路径、参数和“尚未部署”说明是历史记录，不代表当前 Nano 配置。各阶段区别见 [文档索引](docs/README.md)。
 
 ## 核心能力
 
-本开发分支还包含 [2026-09-12 正常退出停车修复](docs/fixes/SHUTDOWN_STOP_FIX_20260912.md)，尚待实机部署及步态复测；上述 `nano-tested-20260911` 标签仍指向修改前的已实测代码。
+本次 [正常退出停车修复](docs/fixes/SHUTDOWN_STOP_FIX_20260912.md) 的备份、部署验证状态和现场复测步骤见对应说明。
 
 | 能力 | 实现 |
 | --- | --- |

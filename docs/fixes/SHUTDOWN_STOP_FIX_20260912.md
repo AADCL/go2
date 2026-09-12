@@ -18,13 +18,30 @@ RViz 在 `navigation.launch` 中不是 required 节点，也没有直接调用 S
 
 ## 验证状态
 
-Windows 上已通过提取生产方法、使用模拟 SDK 与可控时间的回归测试：静止退出、运动中退出、旧反馈、持续运动、异常转向反馈、零 Move 失败、有限故障重试、重复退出、ROS shutdown 和 SIGINT/SIGTERM 后的回调拦截。测试不连接机器人，不产生真实 DDS 请求。Linux 上还需执行包含 SIGHUP 的同一测试，并完成 ARM64 编译。
+已在第二条狗完成 ARM64 bridge 编译、Linux 回归测试及工作空间 package/launch 检查。模拟 SDK 与可控时间回归覆盖静止退出、运动中退出、旧反馈、持续运动、异常转向反馈、零 Move 失败、有限故障重试、重复退出、ROS shutdown 及 SIGINT/SIGTERM/SIGHUP 后的回调拦截。测试不连接机器人，不产生真实 DDS 运动请求。
 
 ```bash
 python3 tools/test_bridge_idle_policy.py
 ```
 
-本次首次 SSH 只读检查时，第二条狗运行代码为 `227823b`，工作区干净、无导航进程。随后 `.111:22` 拒绝连接，备份尚未执行，实机源码和二进制尚未修改。恢复连接后必须先备份源码、测试及旧 bridge 可执行文件，再增量部署；保留现场地面检查优化和地图。
+另用 `tools/check_bridge_shutdown_lifecycle.py` 验证实际编译程序的生命周期：在独立、仅有 lo 的 Linux 网络命名空间内启动 ROS master 和 disabled bridge，分别发送 SIGINT、SIGTERM、SIGHUP 和 ROS XML-RPC shutdown。四项均正常退出，退出耗时分别为 0.164、0.214、0.214、0.268 秒，均记录 `already idle; no new SDK stop request`。网络命名空间无法访问底盘；该脚本发现任何非 lo 网卡都会拒绝运行。隔离环境中查询不到 Unitree 服务版本属于预期现象。
+
+ROS 主动 shutdown 会先关闭 rosconsole，因此最终退出结果改用标准错误输出，保证即使 ROS 已退出，`STOP UNCONFIRMED` 等提示仍可记录。以上实际进程测试验证静止退出；运动中停止的回归使用模拟 SDK，真实步态与运动停车仍需现场验证。
+
+## 部署与备份
+
+已增量部署到第二条狗 `/home/unitree/go2_nav_ws`。修改前为 `227823b`，工作区干净且无导航进程；其地面检查优化完整保留。运行代码仅修改 SDK bridge，地图、雷达地址、规划和地形参数未改。部署过程中未启用底盘，也未启动连接底盘的实机导航。
+
+备份与证据目录：`/home/unitree/shutdown_stop_fix_20260912_PGf5TR/`。
+
+- `before.bundle`：修改前完整 Git 历史，已通过 bundle 校验。
+- `before.tar.gz`：原 bridge 源码、回归脚本及旧 ARM64 bridge 程序，已逐项与原文件比对。SHA256：`66393149a2e3bd32c4299dc27ca8d97bc124de99cd825f903c7fb53e6e7b3c6c`。
+- `build-final.log`、`tests-final.log`、`validate-final.log`：最终编译、回归及工作空间检查。
+- `lifecycle-final/`：四种实际进程退出方式的日志。
+
+新可执行文件为 `devel/lib/go2_control/go2_sdk_bridge_real_node`，SHA256：`f5672aee74c7c4a25c333a7ad1e8b38b437b1f741e4760985a0de15eba5fab1b`。下一次正常启动导航即加载此文件。
+
+需要回退时，先停稳、退出导航并保留任何新的本地改动，再切回原 `codex/nano-ground-check-20260911` 分支，从上述归档恢复旧 bridge 二进制。旧分支及全部地图保留。
 
 ## 实机复测
 

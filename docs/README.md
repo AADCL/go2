@@ -4,10 +4,10 @@
 
 ## 当前 Nano 版本
 
-- 分支：`unitree-orin-nano`；端侧工作空间：`/home/unitree/go2_nav_ws`。
-- 已实测快照：`nano-tested-20260911`（`70f5cbe`）。本开发分支 `codex/nano-shutdown-stop-20260912` 新增正常退出停车修复，尚待实机部署及步态复测；地图、地形参数和启动命令未改动。
+- Nano 主分支：`unitree-orin-nano`；本次修复分支：`codex/nano-shutdown-stop-20260912`；端侧工作空间：`/home/unitree/go2_nav_ws`。
+- 已实测快照：`nano-tested-20260911`（`70f5cbe`）。本分支新增正常退出停车修复，退出步态仍待现场复测；地图和启动命令未改动。
 - 修改前快照：`nano-before-20260911`。已有标签和 Git 提交历史保留。
-- 更晚的地面支持检查优化位于独立开发分支 `codex/nano-ground-check-20260911`，未随本次文档整理合入。
+- 本分支保留 Nano 原先已部署的地面支持检查优化（`227823b`）；本次退出修复没有再改地形算法或参数。见 [地面支持检查记录](fixes/GROUND_SUPPORT_FIX_20260911.md)。
 - 地图名称是用户自定义参数，例如 `lab_202609101805`；实际使用时替换为对应地图目录名。
 
 建议先阅读以下说明，了解当前代码相对早期部署的变化：
