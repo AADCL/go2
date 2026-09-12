@@ -328,10 +328,10 @@ run_go2 enable
 `enable` 只有在以下步骤全部成功后才会真正放行速度：
 
 1. 丢弃启用前缓存的所有速度；
-2. 检查定位健康、底盘电池 SOC 不低于 25%，并确认两路 DDS 遥测在 0.50 秒内更新；
+2. 检查定位健康、底盘电池 SOC 不低于 25%，确认两路 DDS 遥测在 0.50 秒内更新；LowState 遥控数据须有效，摇杆回中、按键释放稳定至少 1 秒；
 3. 通过 Unitree MotionSwitcher 查询当前控制模式；
 4. 只读确认当前模式是本机固件实际注册的 `mcf`，不自动切换控制器；
-5. 发送零速 `Move(0,0,0)`，再显式调用 `ClassicWalk(true)`（API 2049），要求成功回复；
+5. 发送零速 `Move(0,0,0)`，再显式调用 `ClassicWalk(true)`（API 2049），要求成功回复；仅首次返回通用拒绝 `-1` 时，最多尝试一次关闭经典步态并等待 0.30 秒后重新开启，每一步都必须成功；通信或其他 SDK 错误不触发此恢复；
 6. 等待 0.30 秒，再次确认控制器仍为 `mcf` 且没有可见的模式接管后才置为 enabled。后续速度仍使用 `Move(vx, vy, vyaw)`，不周期性重发步态切换。
 
 如果任一步失败，bridge 会保持 disabled，并在终端明确打印失败原因；此时不要重复发布目标，也不要连续反复执行 `enable`。把启动终端中的错误信息保存下来排查。
@@ -360,6 +360,16 @@ run_go2 disable
 `disable` 会立即发送 `StopMove` 并锁住后续运动命令；不能以关闭终端代替安全停机。
 
 `enable` 会主动丢弃启用前缓存的所有速度，再准备经典步态；部分失败路径会调用 `StopMove`。正确顺序仍是“reset → enable → 发布新目标”。发生可见的外部步态/姿态/控制器 API 接管时，bridge 停止继续发送 Move，需要人工重新 Enable。详细证据与测试步骤见 [经典步态与坡道误停修复](docs/DEPLOYMENT_CLASSIC_GAIT_20260911.md)。
+
+### 7.1 普通遥控接管与继续原目标（V2.1.2）
+
+仅用摇杆前进/转向时，自动 SDK 输出暂停，原目标和公开 Action 保持有效；暂停内部规划执行可避免遥控期间的规划超时。期间发布新目标会替换保留目标。
+
+放开摇杆并稳定回中至少 1 秒后，定位、地形和内部规划服务就绪时，系统清理 costmap、复核控制器并从当前位置重新规划，继续保留目标。SDK 等待在后台完成，健康检查和取消指令继续处理。普通摇杆操作未改变步态时沿用先前成功应答的经典步态选择，不重复切换。
+
+此时无需再次 `run_go2 enable`；该命令属于显式重新使能，仍会清理旧目标。明确的取消、reset、Disable、姿态/步态按键、控制器切换或健康故障会终止自动续走。
+
+查看 `/go2/control/state` 可区分 `enabled`、`manual_override`、`manual_ready` 和 `disabled`。本机回中检测读取 `rt/lowstate.wireless_remote`，独立的 `rt/wirelesscontroller` 话题没有有效数据。完整说明见[遥控接管与目标恢复](docs/DEPLOYMENT_MANUAL_RESUME_20260912.md)。
 
 ## 8. TF 与 Topic 正式约定
 
@@ -406,6 +416,7 @@ map -> odom -> base_link -> lidar_link
 - NDT 检查收敛状态、fitness、矩阵有限性、单次位置/角度跳变和匹配超时。
 - localization guard 对全局位姿做第二层连续性检查，连续正常后才允许导航。
 - navigation supervisor 在定位从正常变为异常时取消目标并发送零速度。
+- 普通摇杆接管保留目标并暂停自动输出，回中及检查通过后续走；显式停止与健康故障不会自动续走。
 - velocity shaper 允许受限倒车、禁止横移，限制速度/加速度，并在 0.5 s 无新命令时归零。
 - real SDK bridge 再次检查定位状态和命令超时；启动默认 disabled。
 - real SDK bridge 在每次 `enable` 前确认已注册的 `mcf` 并显式请求 `ClassicWalk(true)`，不自动选择控制器。此前 `normal`、`sport_mode` 和 `ai` 返回 `7004`，不再使用这些名称试错。

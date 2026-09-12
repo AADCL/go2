@@ -7,7 +7,7 @@
 <p align="center">Livox Mid-360 · FAST-LIO · NDT-OMP · move_base/TEB · Unitree SDK2</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-2.1.1-1677ff">
+  <img alt="版本" src="https://img.shields.io/badge/version-2.1.2-1677ff">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
@@ -15,9 +15,9 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [经典步态与坡道误停修复](docs/DEPLOYMENT_CLASSIC_GAIT_20260911.md) · [V2.1.1 发布说明](docs/RELEASE_NOTES_V2.1.1.md) · [第三方版本](THIRD_PARTY.md)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [遥控接管与目标恢复](docs/DEPLOYMENT_MANUAL_RESUME_20260912.md) · [V2.1.2 发布说明](docs/RELEASE_NOTES_V2.1.2.md) · [第三方版本](THIRD_PARTY.md)
 
-> V2.1.1 对应 2026-09-11 机器狗 1 已部署、编译和回放验证的代码，发布前于 2026-09-12 再次核对源码。Enable 显式请求 `ClassicWalk(true)`；地形高度检查增加 2 cm 运行滞回，修复录制中坡道目标被误取消的问题。112 个测试通过，原启动命令、地图和外参保留。经典步态的实际抬腿与爬坡效果仍待现场验收，固件反馈不能确认物理步态。此前 V2.1.0 的坡面/墙体地图导出修复及全部历史版本继续保留。
+> V2.1.2 对应机器狗 1 已部署、编译并由用户现场反馈正常的遥控交接修复。普通摇杆介入时暂停自动控制并保留目标，回中稳定 1 秒后通过健康与控制检查，重新规划并继续原目标。修复 `SwitchJoystick(1027)` 被误判为步态切换的问题，接入实际 LowState 遥控数据；29 项相关测试通过。原启动命令、速度、外参和地图算法保留，历史版本继续可用。固件仍未提供可靠的物理步态反馈，接口成功应答不等于步态测量确认。
 
 ## 核心能力
 
@@ -27,7 +27,7 @@
 | 二维/地形地图 | PGM/YAML 与 elevation、slope、roughness、step、cost、confidence 六层 2.5D 资产 |
 | 重定位 | NDT-OMP 匹配、`map -> odom` 唯一发布、位姿跳变限制和定位健康检测 |
 | 路径规划 | `move_base`、GlobalPlanner、全局坡度代价、TEB、Patchwork++ 局部实时避障 |
-| 真机控制 | Enable 请求经典步态、连续速度整形、Unitree SDK2 SportClient、命令超时与步态响应监测 |
+| 真机控制 | Enable 请求经典步态、遥控暂停与目标续走、连续速度整形、命令超时与步态响应监测 |
 | 安全门控 | 定位与底盘状态联合准入、旧目标清理、失效停车、电量门槛和诊断输出 |
 | 一键启动 | `run_go2` 自动加载 ROS 和工作空间，统一管理建图、导航、地图与底盘状态 |
 
@@ -55,7 +55,7 @@ live cloud -> Patchwork++ -> Terrain Guard -> local ObstacleLayer
 GlobalPlanner -> TEB -> velocity shaper -> Unitree SDK2 bridge -> GO2
 ```
 
-`go2_navigation_supervisor` 截获 RViz 的 `/move_base_simple/goal` 和公开 action。只有定位、底盘控制、实时地形链和内部 `move_base` 同时就绪时，目标才会转发到隔离的内部 action server；任一状态丢失都会取消目标并发送零速度，恢复后必须发布新目标。
+`go2_navigation_supervisor` 截获 RViz 的 `/move_base_simple/goal` 和公开 action。只有定位、底盘控制、实时地形链和内部 `move_base` 同时就绪时，目标才会转发到内部 action server。普通遥控介入时保留用户目标、暂停内部规划执行；回中稳定后清理 costmap 并重规划续走，期间的新目标替换保留目标。显式取消、Disable、姿态接管或健康故障仍终止自动续走。
 
 ## 目录结构
 
@@ -169,6 +169,8 @@ run_go2 enable
 
 `enable` 会先取消旧目标、发送零速度并清理 costmap，再请求 SDK bridge 使能。命令同时核验服务返回和 `/go2/control/enabled`，失败时不会显示误导性的成功提示。使能成功后，在 RViz 中发布新的 `2D Nav Goal`。
 
+导航中用遥控器前进或转向后，放开摇杆并保持回中至少 1 秒；检查通过后会继续原目标，无需再执行 `enable`。回中确认后还需等待控制器应答与重新规划。显式 `reset-navigation` 或 `enable` 仍按原流程清理旧目标；详情见[遥控接管与目标恢复](docs/DEPLOYMENT_MANUAL_RESUME_20260912.md)。
+
 随时停止底盘控制：
 
 ```bash
@@ -250,6 +252,8 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 | [TERRAIN_OPTIMIZATION_GUIDE.md](TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
 | [V2.1.0 发布说明](docs/RELEASE_NOTES_V2.1.0.md) | 通用坡面/墙体导出修复、回归结果与兼容范围 |
 | [V2.1.1 发布说明](docs/RELEASE_NOTES_V2.1.1.md) | 经典步态请求、高度滞回和隔离 bag 回放验证 |
+| [V2.1.2 发布说明](docs/RELEASE_NOTES_V2.1.2.md) | 遥控保留目标、回中续走与经典步态确认修复 |
+| [遥控接管与目标恢复](docs/DEPLOYMENT_MANUAL_RESUME_20260912.md) | 真实数据来源、状态交接、测试及回滚 |
 | [经典步态修复与验收](docs/DEPLOYMENT_CLASSIC_GAIT_20260911.md) | 日志根因、诊断字段、原流程测试和回滚 |
 | [通用导出修复](docs/TERRAIN_EXPORT_REVISION2_20260910.md) | revision 2 参数、质量检查、备份与回滚 |
 | [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |

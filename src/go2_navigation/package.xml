@@ -22,4 +22,5 @@
   <exec_depend>rosbag</exec_depend>
   <exec_depend>teb_local_planner</exec_depend>
   <export/>
+  <test_depend>rostest</test_depend>
 </package>

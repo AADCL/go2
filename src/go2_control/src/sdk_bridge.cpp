@@ -8,12 +8,15 @@
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/JointState.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 
 #include <go2_control/Go2BmsState.h>
 #include <go2_control/Go2LowState.h>
 #include <go2_control/Go2SportState.h>
 #include <go2_control/classic_gait.hpp>
+#include <go2_control/manual_control.hpp>
 
 #include <unitree/idl/go2/LowState_.hpp>
 #include <unitree/idl/go2/SportModeState_.hpp>
@@ -132,6 +135,8 @@ public:
         &Go2SdkBridgeReal::localizationCallback, this);
     enable_service_ = pnh_.advertiseService("enable",
         &Go2SdkBridgeReal::enableCallback, this);
+    resume_service_ = pnh_.advertiseService("resume_after_manual",
+        &Go2SdkBridgeReal::resumeAfterManual, this);
 
     low_state_pub_ = nh_.advertise<go2_control::Go2LowState>(
         "/go2/state/low_state", 10);
@@ -148,6 +153,8 @@ public:
         "/go2/diagnostics", 10);
     control_enabled_pub_ = nh_.advertise<std_msgs::Bool>(
         "/go2/control/enabled", 1, true);
+    control_state_pub_ = nh_.advertise<std_msgs::String>(
+        "/go2/control/state", 10, true);
 
     low_state_subscriber_.reset(
         new unitree::robot::ChannelSubscriber<
@@ -193,6 +200,7 @@ public:
   ~Go2SdkBridgeReal()
   {
     enabled_.store(false);
+    { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
     publishControlEnabled(false);
     stopRobot();
     ROS_WARN("GO2 SDK bridge shutdown: StopMove sent.");
@@ -304,22 +312,54 @@ private:
     return false;
   }
 
-  bool prepareDirectMoveControl()
+  bool remoteAllowsArming(bool manual_resume) {
+    std::lock_guard<std::mutex> lock(remote_mutex_);
+    const double now = ros::WallTime::now().toSec();
+    return mode_override_api_.load() == 0 && remote_.neutralAndFresh(now) &&
+        (!manual_resume || remote_.canResume(now));
+  }
+
+  bool prepareDirectMoveControl(bool preserve_classic_ack = false,
+                                bool manual_resume = false)
   {
     last_gait_error_.clear();
     if (!ensureRequiredMotionMode()) return false;
+    if (!remoteAllowsArming(manual_resume)) {
+      last_gait_error_ = "remote resume permission changed during controller check";
+      return false;
+    }
 
     int32_t move_result = 0;
-    if (gait_mode_ == "classic_mcf")
+    if (gait_mode_ == "classic_mcf" && !preserve_classic_ack)
     {
-      const auto result = go2_control::requestClassicWalk(*sport_client_);
+      struct PrepareClient {
+        Go2SdkBridgeReal& bridge;
+        int Move(float x,float y,float z) { return bridge.sport_client_->Move(x,y,z); }
+        int ClassicWalk(bool on) {
+          if (!on) bridge.expected_classic_reset_request_.store(true);
+          const int code = bridge.sport_client_->ClassicWalk(on);
+          ROS_WARN("ClassicWalk(%s) preparation reply: SDK=%d", on ? "true" : "false", code);
+          return code;
+        }
+      } client{*this};
+      const auto result = go2_control::requestClassicWalk(client,
+          [this, manual_resume] { return remoteAllowsArming(manual_resume); },
+          [] { ros::WallDuration(0.30).sleep(); });
+      expected_classic_reset_request_.store(false);
       move_result = result.zero_result;
       classic_sdk_result_.store(result.classic_result);
+      classic_first_result_.store(result.first_classic_result);
+      classic_reset_result_.store(result.reset_result);
+      classic_reset_attempted_.store(result.reset_attempted);
       if (!result.accepted())
       {
         last_gait_error_ = "ClassicWalk(true) preparation failed: zero SDK=" +
-            asString(result.zero_result) + ", classic SDK=" +
-            asString(result.classic_result);
+            asString(result.zero_result) + ", first classic SDK=" +
+            asString(result.first_classic_result) + ", reset attempted=" +
+            asString(result.reset_attempted) + ", reset SDK=" +
+            asString(result.reset_result) + ", final classic SDK=" +
+            asString(result.classic_result) + ", cancelled=" + asString(result.cancelled);
+        ROS_ERROR("%s", last_gait_error_.c_str());
         return false;
       }
       classic_request_accepted_.store(true);
@@ -343,11 +383,15 @@ private:
 
     if (!verifyRequiredMotionMode()) return false;
 
-    if (mode_override_api_.load() != 0)
+    if (!remoteAllowsArming(manual_resume))
     {
-      last_gait_error_ = "external mode/posture request during arming, API=" +
+      last_gait_error_ = "remote changed or became stale during arming, API=" +
           asString(mode_override_api_.load());
       return false;
+    }
+    if (preserve_classic_ack) {
+      classic_request_accepted_.store(true);
+      ROS_WARN("Joystick-only resume: preserving acknowledged ClassicWalk selection; controller rechecked, no duplicate gait toggle.");
     }
     ROS_WARN("GO2 Move preparation complete: controller=%s gait_policy=%s.",
              current_motion_mode_.c_str(), gait_mode_.c_str());
@@ -356,28 +400,81 @@ private:
 
   void modeRequestCallback(const void* data, bool switcher)
   {
-    if (gait_mode_ != "classic_mcf" ||
-        (!enabled_.load() && !arming_.load())) return;
     const auto& request =
         *static_cast<const unitree_api::msg::dds_::Request_*>(data);
     const int64_t api = request.header().identity().api_id();
+    bool on = false, valid_bool = false;
+    if (!switcher && (api == 1027 || api == 2049)) {
+      try {
+        unitree::common::JsonMap parameter;
+        unitree::common::FromJsonString(request.parameter(), parameter);
+        const auto found = parameter.find("data");
+        if (found != parameter.end()) {
+          unitree::common::FromJson(found->second, on); valid_bool = true;
+        }
+      } catch (...) {}
+    }
+    const auto override_api = mode_override_api_.load();
+    const bool controlled = (enabled_.load() || arming_.load()) &&
+        (override_api == 0 || override_api == 1027);
+    const auto joystick = switcher ? go2_control::JoystickRequest::kNotJoystick :
+        go2_control::joystickRequest(api, valid_bool, on);
+    if (joystick != go2_control::JoystickRequest::kNotJoystick) {
+      last_joystick_request_.store(valid_bool ? (on ? 1 : 0) : -1);
+      ROS_WARN("Observed SwitchJoystick API 1027: data=%s (controller routing, not a gait selection).",
+               valid_bool ? (on ? "true" : "false") : "invalid");
+      if (joystick == go2_control::JoystickRequest::kTakeover && controlled) {
+        std::lock_guard<std::mutex> lock(remote_mutex_);
+        remote_.pause(true);
+        mode_override_api_.store(1027);
+      }
+      return;  // A release never disarms an otherwise healthy navigation session.
+    }
     if (switcher ? (api != 1002 && api != 1003)
                  : !go2_control::changesSportMode(api)) return;
     if (!switcher && api == 2049)
     {
-      try
-      {
-        unitree::common::JsonMap parameter;
-        unitree::common::FromJsonString(request.parameter(), parameter);
-        const auto found = parameter.find("data");
-        bool on = false;
-        if (found != parameter.end()) unitree::common::FromJson(found->second, on);
-        if (on) return;  // Ours or an external request for the same policy.
-      }
-      catch (...) {}  // An undecodable mode command is not proof of classic.
+      if (valid_bool && on) return;
+      // Consume exactly one expected off request; any second request aborts.
+      if (valid_bool && !on && arming_.load() &&
+          expected_classic_reset_request_.exchange(false)) return;
     }
-    mode_override_api_.store(switcher ? -api : api);
+    { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
     classic_request_accepted_.store(false);
+    if (!controlled) return;
+    mode_override_api_.store(switcher ? -api : api);
+  }
+
+  void observeRemote(const std::array<uint8_t,40>& bytes) {
+    go2_control::RemoteSample state;
+    const bool valid = go2_control::decodeLowStateRemote(bytes, state);
+    const auto override_api = mode_override_api_.load();
+    const bool controlled = (enabled_.load() || arming_.load()) &&
+        (override_api == 0 || override_api == 1027);
+    std::lock_guard<std::mutex> lock(remote_mutex_);
+    const auto event = remote_.observe(valid ? state.lx : std::numeric_limits<double>::quiet_NaN(),
+        state.ly,state.rx,state.ry,state.keys,ros::WallTime::now().toSec(),controlled);
+    if (controlled && event != go2_control::RemoteEvent::kNeutral)
+      mode_override_api_.store(event == go2_control::RemoteEvent::kManualMotion ? 1027 : -9001);
+  }
+
+  bool resumeAfterManual(std_srvs::Trigger::Request&,
+                        std_srvs::Trigger::Response& response) {
+    {
+      std::lock_guard<std::mutex> lock(remote_mutex_);
+      if (!remote_.canResume(ros::WallTime::now().toSec())) {
+        response.success = false;
+        response.message = "Manual resume unavailable: needs prior joystick takeover and fresh centered sticks for 1 second; explicit disable/fault needs run_go2 enable.";
+        return true;
+      }
+    }
+    std_srvs::SetBool::Request request;
+    std_srvs::SetBool::Response enabled;
+    request.data = true;
+    setEnabled(request, enabled, true);
+    response.success = enabled.success;
+    response.message = enabled.message;
+    return true;
   }
 
   double shapeForwardVelocity(double vx) const
@@ -401,6 +498,7 @@ private:
     const bool previous = localization_ok_.exchange(msg->data);
     if (previous && !msg->data)
     {
+      { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
       commanded_motion_active_.store(false);
       last_nonzero_command_wall_.store(0.0);
       commanded_vx_.store(0.0);
@@ -428,6 +526,26 @@ private:
   bool enableCallback(std_srvs::SetBool::Request& request,
                       std_srvs::SetBool::Response& response)
   {
+    return setEnabled(request, response, false);
+  }
+
+  bool setEnabled(std_srvs::SetBool::Request& request,
+                  std_srvs::SetBool::Response& response, bool manual_resume)
+  {
+    if (manual_resume) {
+      std::lock_guard<std::mutex> lock(remote_mutex_);
+      if (!remote_.canResume(ros::WallTime::now().toSec())) {
+        response.success = false;
+        response.message = "Manual resume permission was revoked before preparation";
+        return true;
+      }
+    }
+    // A joystick-only pause does not change the previously acknowledged gait.
+    // Any observed gait/posture change clears both acknowledgement and resume
+    // permission, so explicit Enable must then reapply ClassicWalk.
+    const bool preserve_classic_ack = manual_resume &&
+        classic_request_accepted_.load() &&
+        (mode_override_api_.load() == 0 || mode_override_api_.load() == 1027);
     arming_.store(false);
     classic_request_accepted_.store(false);
     mode_override_api_.store(0);
@@ -445,6 +563,8 @@ private:
     }
     if (!request.data)
     {
+      { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
+      publishControlEnabled(false);
       stopRobot();
       response.success = true;
       response.message = "REAL GO2 SDK bridge disabled; StopMove sent.";
@@ -453,6 +573,8 @@ private:
     }
     if (!localization_ok_.load())
     {
+      { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
+      publishControlEnabled(false);
       stopRobot();
       response.success = false;
       response.message = "Cannot enable: localization/ok is false.";
@@ -477,8 +599,16 @@ private:
       response.message = "Cannot enable: current DDS telemetry is unavailable.";
       return true;
     }
+    {
+      std::lock_guard<std::mutex> lock(remote_mutex_);
+      if (!remote_.neutralAndFresh(now)) {
+        response.success = false;
+        response.message = "Cannot enable: LowState remote data must be valid and fresh, with sticks centered and buttons released for 1 second.";
+        return true;
+      }
+    }
     arming_.store(true);
-    const bool prepared = prepareDirectMoveControl();
+    const bool prepared = prepareDirectMoveControl(preserve_classic_ack, manual_resume);
     arming_.store(false);
     if (!prepared)
     {
@@ -495,6 +625,7 @@ private:
     no_step_response_.store(false);
     joint_motion_ema_.store(0.0);
     enabled_.store(true);
+    { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
     publishControlEnabled(true);
     response.success = true;
     response.message = "REAL GO2 SDK bridge enabled: " + gait_mode_ +
@@ -505,10 +636,23 @@ private:
 
   void controlCallback(const ros::TimerEvent&)
   {
-    if (!sport_client_ || !enabled_.load()) return;
-    if (gait_mode_ == "classic_mcf" &&
-        (!classic_request_accepted_.load() || mode_override_api_.load() != 0))
+    if (!sport_client_) return;
+    if (!enabled_.load()) {
+      publishControlEnabled(false);  // Advance manual_override -> manual_ready.
+      return;
+    }
+    if (mode_override_api_.load() == 1027) {
+      enabled_.store(false);
+      publishControlEnabled(false);
+      commanded_motion_active_.store(false);
+      commanded_vx_.store(0.0); commanded_wz_.store(0.0);
+      ROS_WARN("Manual joystick takeover: autonomous output paused; supervisor retains the goal and replans after sticks remain centered for 1 second.");
+      return;  // Do not fight the operator with zero/StopMove during manual driving.
+    }
+    if (mode_override_api_.load() != 0 ||
+        (gait_mode_ == "classic_mcf" && !classic_request_accepted_.load()))
     {
+      { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
       enabled_.store(false);
       publishControlEnabled(false);
       commanded_motion_active_.store(false);
@@ -522,6 +666,7 @@ private:
     }
     if (!localization_ok_.load())
     {
+      { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
       commanded_motion_active_.store(false);
       commanded_vx_.store(0.0);
       commanded_wz_.store(0.0);
@@ -597,6 +742,7 @@ private:
         now.toSec() - last_motion_response_wall_.load();
     if (no_response_age >= motion_response_timeout_sec_)
     {
+      { std::lock_guard<std::mutex> lock(remote_mutex_); remote_.cancelResume(); }
       no_step_response_.store(true);
       commanded_motion_active_.store(false);
       last_nonzero_command_wall_.store(0.0);
@@ -637,6 +783,7 @@ private:
   {
     const auto& state =
         *static_cast<const unitree_go::msg::dds_::LowState_*>(message);
+    observeRemote(state.wireless_remote());
     const double wall_now = ros::WallTime::now().toSec();
     last_low_state_rx_.store(wall_now);
     battery_soc_.store(static_cast<int>(state.bms_state().soc()));
@@ -908,6 +1055,19 @@ private:
     status.values.push_back(keyValue("last_gait_error", last_gait_error_));
     status.values.push_back(keyValue("classic_api_id", "2049"));
     status.values.push_back(keyValue("classic_sdk_result", asString(classic_sdk_result_.load())));
+    status.values.push_back(keyValue("classic_first_sdk_result", asString(classic_first_result_.load())));
+    status.values.push_back(keyValue("classic_reset_attempted", classic_reset_attempted_.load() ? "true" : "false"));
+    status.values.push_back(keyValue("classic_reset_sdk_result", asString(classic_reset_result_.load())));
+    status.values.push_back(keyValue("last_switch_joystick_data", asString(last_joystick_request_.load())));
+    {
+      std::lock_guard<std::mutex> lock(remote_mutex_);
+      status.values.push_back(keyValue("manual_resume_pending", remote_.resumable ? "true" : "false"));
+      status.values.push_back(keyValue("remote_source", "rt/lowstate.wireless_remote"));
+      status.values.push_back(keyValue("manual_resume_ready", remote_.canResume(now) ? "true" : "false"));
+      status.values.push_back(keyValue("remote_axis_max", asString(remote_.max_axis)));
+      status.values.push_back(keyValue("remote_buttons", asString(remote_.keys)));
+      status.values.push_back(keyValue("remote_age_sec", remote_.last_sample < 0.0 ? "unavailable" : asString(now-remote_.last_sample)));
+    }
     status.values.push_back(keyValue("classic_request_accepted", classic_request_accepted_.load() ? "true" : "false"));
     status.values.push_back(keyValue("classic_feedback_verified", "false"));
     status.values.push_back(keyValue("classic_feedback_note", "MCF mode/gait fields and GetState do not confirm gait on this firmware"));
@@ -959,6 +1119,24 @@ private:
   void publishControlEnabled(bool enabled)
   {
     if (!control_enabled_pub_) return;
+    std_msgs::String state;
+    state.data = enabled ? "enabled" : "disabled";
+    if (!enabled) {
+      std::lock_guard<std::mutex> lock(remote_mutex_);
+      if (remote_.resumable)
+        state.data = remote_.canResume(ros::WallTime::now().toSec())
+            ? "manual_ready" : "manual_override";
+    }
+    // One ordered topic carries both enabled state and its reason. A separate
+    // bool/reason pair has no ROS cross-topic ordering guarantee.
+    if (state.data != last_published_state_) {
+      last_published_state_ = state.data;
+      control_state_pub_.publish(state);
+    }
+    // Do not enqueue another stale false before a successful resume's true.
+    if (have_published_control_ && last_published_control_ == enabled) return;
+    have_published_control_ = true;
+    last_published_control_ = enabled;
     std_msgs::Bool msg;
     msg.data = enabled;
     control_enabled_pub_.publish(msg);
@@ -975,6 +1153,7 @@ private:
   ros::Subscriber command_sub_;
   ros::Subscriber localization_sub_;
   ros::ServiceServer enable_service_;
+  ros::ServiceServer resume_service_;
   ros::Publisher low_state_pub_;
   ros::Publisher sport_state_pub_;
   ros::Publisher bms_state_pub_;
@@ -983,6 +1162,8 @@ private:
   ros::Publisher joint_state_pub_;
   ros::Publisher diagnostics_pub_;
   ros::Publisher control_enabled_pub_;
+  ros::Publisher control_state_pub_;
+  std::string last_published_state_;
   ros::Timer control_timer_;
   ros::Timer diagnostics_timer_;
 
@@ -997,6 +1178,13 @@ private:
   std::atomic<bool> arming_{false};
   std::atomic<bool> classic_request_accepted_{false};
   std::atomic<int32_t> classic_sdk_result_{-1};
+  std::atomic<int32_t> classic_first_result_{-1}, classic_reset_result_{-1};
+  std::atomic<bool> classic_reset_attempted_{false};
+  std::atomic<bool> expected_classic_reset_request_{false};
+  std::atomic<int> last_joystick_request_{-1};
+  std::mutex remote_mutex_;
+  go2_control::ManualControlState remote_;
+  bool have_published_control_ = false, last_published_control_ = false;
   std::atomic<int64_t> mode_override_api_{0};
   std::atomic<double> last_classic_request_wall_{0.0};
 

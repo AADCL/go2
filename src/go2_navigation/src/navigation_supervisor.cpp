@@ -1,5 +1,7 @@
 #include <cstdint>
 #include <string>
+#include <future>
+#include <chrono>
 
 #include <actionlib/client/simple_action_client.h>
 #include <actionlib/server/simple_action_server.h>
@@ -10,6 +12,7 @@
 #include <move_base_msgs/MoveBaseAction.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include <std_srvs/Empty.h>
 #include <std_srvs/Trigger.h>
 
@@ -38,6 +41,9 @@ class NavigationSupervisor {
     control_enabled_sub_ = nh_.subscribe(
         "/go2/control/enabled", 10,
         &NavigationSupervisor::controlEnabledCallback, this);
+    control_state_sub_ = nh_.subscribe(
+        "/go2/control/state", 10,
+        &NavigationSupervisor::controlStateCallback, this);
     simple_goal_sub_ = nh_.subscribe(
         "/move_base_simple/goal", 1,
         &NavigationSupervisor::simpleGoalCallback, this);
@@ -55,12 +61,16 @@ class NavigationSupervisor {
     internal_server_timer_ = nh_.createWallTimer(
         ros::WallDuration(0.10),
         &NavigationSupervisor::internalServerTimerCallback, this);
+    manual_resume_timer_ = nh_.createWallTimer(ros::WallDuration(0.20),
+        &NavigationSupervisor::manualResumeCallback, this);
 
     ready_pub_ =
         nh_.advertise<std_msgs::Bool>("/navigation/ready", 1, true);
     zero_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel_nav", 1);
     clear_client_ =
         nh_.serviceClient<std_srvs::Empty>("/move_base/clear_costmaps");
+    resume_client_ = nh_.serviceClient<std_srvs::Trigger>(
+        "/go2_sdk_bridge_real/resume_after_manual");
     reset_service_ = pnh_.advertiseService(
         "reset", &NavigationSupervisor::resetCallback, this);
 
@@ -82,7 +92,9 @@ class NavigationSupervisor {
   void stopInternalGoal() {
     ++action_generation_;
     simple_internal_active_ = false;
-    internal_action_client_.cancelAllGoals();
+    // Address the exact private goal ID. A delayed cancel-all can otherwise
+    // cancel a replacement/resumed goal received on a different ROS topic.
+    internal_action_client_.cancelGoal();
   }
 
   void abortExternalGoal(const std::string& reason) {
@@ -94,6 +106,9 @@ class NavigationSupervisor {
   }
 
   void cancelAndStop(const std::string& reason) {
+    if (manual_paused_) manual_resume_blocked_ = true;
+    have_retained_goal_ = false;
+    resume_attempted_ = true;
     stopInternalGoal();
     abortExternalGoal(reason);
     zero_pub_.publish(geometry_msgs::Twist());
@@ -115,6 +130,19 @@ class NavigationSupervisor {
         terrainReady() && internal_server_connected_;
   }
 
+  bool canRetainManualGoal() const {
+    return manual_paused_ && !manual_resume_blocked_ && localization_ok_ && terrainReady() &&
+        internal_server_connected_;
+  }
+
+  void retainGoal(const move_base_msgs::MoveBaseGoal& goal, bool simple) {
+    retained_goal_ = goal;
+    retained_is_simple_ = simple;
+    have_retained_goal_ = true;
+    simple_goal_started_ = simple ? ros::Time::now() : ros::Time();
+    resume_attempted_ = false;
+  }
+
   std::string notReadyReason() const {
     return std::string("Navigation is not ready: localization_ok=") +
         (localization_ok_ ? "true" : "false") +
@@ -125,12 +153,13 @@ class NavigationSupervisor {
          (terrainReady() ? "true" : "false-or-stale")) +
         ", move_base_internal=" +
         (internal_server_connected_ ? "connected" : "disconnected") +
-        ". Run 'run_go2 enable' and publish a fresh goal.";
+        (manual_paused_ ? ". Manual override: target retained until safe resume." :
+         ". Restore unhealthy inputs; if control is disabled, run 'run_go2 enable' and publish a fresh goal.");
   }
 
   void simpleGoalCallback(
       const geometry_msgs::PoseStamped::ConstPtr& message) {
-    if (!ready()) {
+    if (!ready() && !canRetainManualGoal()) {
       const std::string reason = notReadyReason();
       ROS_ERROR_STREAM("Simple goal rejected. " << reason);
       cancelAndStop(reason);
@@ -155,6 +184,11 @@ class NavigationSupervisor {
     }
     move_base_msgs::MoveBaseGoal internal_goal;
     internal_goal.target_pose = *message;
+    retainGoal(internal_goal, true);
+    if (manual_paused_) {
+      ROS_INFO("Manual override: replacement simple goal retained, not sent to planner");
+      return;
+    }
     sendInternalGoal(internal_goal, true);
     ROS_INFO_STREAM("Navigation simple goal accepted in frame '"
                     << message->header.frame_id << "'.");
@@ -173,6 +207,7 @@ class NavigationSupervisor {
       return;
     }
     if (external_action_server_.isPreemptRequested()) {
+      have_retained_goal_ = false;
       stopInternalGoal();
       move_base_msgs::MoveBaseResult result;
       external_action_server_.setPreempted(
@@ -180,7 +215,7 @@ class NavigationSupervisor {
       zero_pub_.publish(geometry_msgs::Twist());
       return;
     }
-    if (!ready()) {
+    if (!ready() && !canRetainManualGoal()) {
       const std::string reason = notReadyReason();
       ROS_ERROR_STREAM("Action goal rejected. " << reason);
       cancelAndStop(reason);
@@ -194,6 +229,11 @@ class NavigationSupervisor {
       return;
     }
 
+    retainGoal(*goal, false);
+    if (manual_paused_) {
+      ROS_INFO("Manual override: replacement action goal retained and kept active");
+      return;
+    }
     sendInternalGoal(*goal, false);
     ROS_INFO("Validated action goal forwarded to internal move_base");
   }
@@ -202,7 +242,6 @@ class NavigationSupervisor {
                         bool is_simple_goal) {
     const std::uint64_t generation = ++action_generation_;
     simple_internal_active_ = is_simple_goal;
-    simple_goal_started_ = is_simple_goal ? ros::Time::now() : ros::Time();
     internal_action_client_.sendGoal(
         goal,
         boost::bind(&NavigationSupervisor::internalDoneCallback, this,
@@ -225,6 +264,7 @@ class NavigationSupervisor {
     if (!external_action_server_.isActive()) {
       return;
     }
+    have_retained_goal_ = false;
     stopInternalGoal();
     move_base_msgs::MoveBaseResult result;
     external_action_server_.setPreempted(
@@ -233,7 +273,7 @@ class NavigationSupervisor {
   }
 
   void publicCancelCallback(const actionlib_msgs::GoalID::ConstPtr& cancel) {
-    if (!simple_internal_active_ || !cancel || !cancel->id.empty()) {
+    if (!(have_retained_goal_ && retained_is_simple_) || !cancel || !cancel->id.empty()) {
       return;
     }
     // actionlib: an empty id with zero stamp cancels all goals; an empty id
@@ -243,6 +283,7 @@ class NavigationSupervisor {
       return;
     }
     ROS_WARN("Public move_base cancel stopped the active simple goal");
+    have_retained_goal_ = false;
     stopInternalGoal();
     zero_pub_.publish(geometry_msgs::Twist());
   }
@@ -273,6 +314,7 @@ class NavigationSupervisor {
       return;
     }
     simple_internal_active_ = false;
+    have_retained_goal_ = false;
     if (!external_action_server_.isActive()) {
       return;
     }
@@ -302,6 +344,7 @@ class NavigationSupervisor {
   }
 
   void controlEnabledCallback(const std_msgs::Bool::ConstPtr& message) {
+    if (have_control_mode_) return;  // Compatibility fallback for older bridges.
     if (have_control_state_ && control_enabled_ && !message->data) {
       ROS_ERROR("GO2 control disabled: cancelling navigation goal");
       cancelAndStop("GO2 control disabled");
@@ -309,6 +352,80 @@ class NavigationSupervisor {
     control_enabled_ = message->data;
     have_control_state_ = true;
     publishReady(ready());
+  }
+
+  void controlStateCallback(const std_msgs::String::ConstPtr& message) {
+    const auto& state = message->data;
+    if (state != "enabled" && state != "disabled" &&
+        state != "manual_override" && state != "manual_ready") {
+      cancelAndStop("Unknown control state");
+      control_enabled_ = false;
+      publishReady(false);
+      return;
+    }
+    const bool was_enabled = control_enabled_;
+    have_control_mode_ = have_control_state_ = true;
+    control_enabled_ = state == "enabled";
+    if (state == "manual_override" || state == "manual_ready") {
+      if (was_enabled) manual_resume_blocked_ = false;
+      const bool ready_to_resume = state == "manual_ready";
+      if (!manual_paused_) {
+        // Cancel only the PRIVATE planner execution so planner patience cannot
+        // expire while the operator drives. Keep the user's target/action alive.
+        stopInternalGoal();
+        zero_pub_.publish(geometry_msgs::Twist());
+        ROS_WARN("Remote takeover: navigation target retained; private planner paused");
+      }
+      if (ready_to_resume != manual_ready_) resume_attempted_ = false;
+      manual_paused_ = true;
+      manual_ready_ = ready_to_resume;
+    } else if (state == "disabled") {
+      cancelAndStop("GO2 explicitly disabled or a non-resumable fault occurred");
+      manual_paused_ = manual_ready_ = false;
+      manual_resume_blocked_ = true;
+    } else {
+      manual_resume_blocked_ = false;
+    }
+    // enabled is processed by the timer after queued health/cancel callbacks.
+    publishReady(ready() && !manual_paused_);
+  }
+
+  void manualResumeCallback(const ros::WallTimerEvent&) {
+    if (resume_future_.valid()) {
+      if (resume_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+      const auto error = resume_future_.get();
+      if (!error.empty()) {
+        ROS_ERROR_STREAM("Manual resume held: " << error << "; no motion goal sent");
+        return;
+      }
+      ROS_INFO("Manual resume preparation accepted; waiting for enabled state");
+    }
+    if (!manual_paused_) return;
+    if (control_enabled_) {
+      if (!ready()) return;
+      manual_paused_ = manual_ready_ = false;
+      if (have_retained_goal_) {
+        sendInternalGoal(retained_goal_, retained_is_simple_);
+        ROS_WARN("Remote released: replanning and continuing the retained navigation goal");
+      }
+      publishReady(ready());
+      return;
+    }
+    if (!manual_ready_ || !have_retained_goal_ || resume_attempted_ ||
+        !canRetainManualGoal()) return;
+    resume_attempted_ = true;  // One attempt per neutral interval/new target.
+    // SDK preparation can take seconds. Keep processing health, cancellation,
+    // and replacement goals on the ROS spinner while services are pending.
+    resume_future_ = std::async(std::launch::async, [this]() -> std::string {
+      std_srvs::Empty clear;
+      if (!clear_client_.exists() || !clear_client_.call(clear))
+        return "costmap clear failed; target retained";
+      std_srvs::Trigger resume;
+      if (!resume_client_.exists() || !resume_client_.call(resume))
+        return "resume service unavailable; target retained";
+      return resume.response.success ? std::string() : resume.response.message;
+    });
   }
 
   void terrainHealthCallback(const std_msgs::Bool::ConstPtr& message) {
@@ -389,18 +506,28 @@ class NavigationSupervisor {
   MoveBaseActionClient internal_action_client_;
   ros::Subscriber localization_sub_;
   ros::Subscriber control_enabled_sub_;
+  ros::Subscriber control_state_sub_;
   ros::Subscriber simple_goal_sub_;
   ros::Subscriber public_cancel_sub_;
   ros::Subscriber terrain_health_sub_;
   ros::WallTimer terrain_health_timer_;
   ros::WallTimer internal_server_timer_;
+  ros::WallTimer manual_resume_timer_;
   ros::Publisher ready_pub_;
   ros::Publisher zero_pub_;
   ros::ServiceClient clear_client_;
+  ros::ServiceClient resume_client_;
   ros::ServiceServer reset_service_;
   bool localization_ok_ = false;
   bool control_enabled_ = false;
   bool have_control_state_ = false;
+  bool have_control_mode_ = false;
+  bool manual_paused_ = false, manual_ready_ = false;
+  bool manual_resume_blocked_ = false;
+  bool resume_attempted_ = false, have_retained_goal_ = false;
+  bool retained_is_simple_ = false;
+  move_base_msgs::MoveBaseGoal retained_goal_;
+  std::future<std::string> resume_future_;
   bool require_terrain_health_ = false;
   bool terrain_healthy_ = false;
   bool have_terrain_state_ = false;
