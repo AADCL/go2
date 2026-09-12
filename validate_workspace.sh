@@ -172,6 +172,8 @@ grep -q 'steep_unknown_max_point_residual: 0.05' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'minimum_connected_ground_area_m2: 0.40' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
+grep -q 'coplanar_support_enabled: true' \
+  "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'minimum_near_support_area_m2: 0.18' \
   "${WS_ROOT}/src/go2_terrain/config/terrain_guard_go2.yaml"
 grep -q 'anchor_radius: 1.20' \
@@ -206,7 +208,8 @@ for diagnostic_key in ground_plane_fit_status ground_plane_samples \
   estimated_sensor_height_m ground_plane_slope_deg ground_plane_rmse_m \
   frame_health_class health_gate_open consecutive_healthy_frames \
   consecutive_soft_geometry_failures soft_geometry_failure_age_sec \
-  height_outlier_hold_sec height_outlier_held last_healthy_frame_age_sec; do
+  height_outlier_hold_sec height_outlier_held last_healthy_frame_age_sec \
+  health_support_source health_support_area_m2 health_support_sectors; do
   grep -q "${diagnostic_key}" \
     "${WS_ROOT}/src/go2_terrain/src/terrain_guard.cpp"
 done

@@ -567,6 +567,126 @@ TEST(TerrainModel, SustainedHeightOutliersCloseGateAndCannotReopenIt) {
   }
 }
 
+namespace {
+struct SparseSupportFixture {
+  gt::GroundConnectivityParameters geometry = coverageGeometry();
+  gt::GroundHealthParameters health;
+  gt::CoplanarGroundSupportParameters parameters;
+  std::vector<std::uint8_t> seed = std::vector<std::uint8_t>(21 * 21, 0U);
+  std::vector<std::uint8_t> observed;
+  std::vector<float> heights;
+  gt::GroundPlaneEstimate plane;
+
+  SparseSupportFixture() {
+    health.minimum_connected_area_m2 = 0.40;
+    health.near_support_radius_m = 1.20;
+    health.minimum_covered_sectors = 2;
+    for (int y = 6; y <= 9; ++y)
+      for (int x = 12; x <= 15; ++x) seed[coverageIndex(x, y, geometry)] = 1U;
+    observed = seed;
+    for (int y = 12; y <= 15; ++y)
+      for (int x = 6; x <= 9; ++x) observed[coverageIndex(x, y, geometry)] = 1U;
+    heights = planarCandidateHeights(geometry, observed, 0.51, 0.0);
+    gt::GroundPlaneFitParameters fit;
+    fit.minimum_sensor_height_m = 0.35;
+    plane = gt::estimateConnectedGroundPlane(heights, seed, geometry, fit);
+  }
+
+  gt::CoplanarGroundSupport measure() const {
+    return gt::measureCoplanarGroundSupport(
+        heights, observed, seed, plane, geometry, health, parameters);
+  }
+};
+}  // namespace
+
+TEST(TerrainModel, CoplanarSupportCountsObservedIslandsWithoutFillingGaps) {
+  SparseSupportFixture f;
+  ASSERT_TRUE(f.plane.valid);
+  const auto original_seed = f.seed;
+  const auto original_observed = f.observed;
+  EXPECT_FALSE(gt::healthyGroundCoverage(
+      gt::measureGroundCoverage(f.observed, f.geometry, f.health), f.health));
+  const auto evidence = f.measure();
+  ASSERT_TRUE(evidence.valid);
+  EXPECT_TRUE(gt::healthyGroundCoverage(evidence.coverage, f.health));
+  EXPECT_EQ(32U, evidence.coverage.connected_cells);
+  EXPECT_EQ(16U, evidence.additional_cells);
+  EXPECT_NEAR(0.72, evidence.coverage.connected_area_m2, 1e-9);
+  EXPECT_EQ(original_seed, f.seed);
+  EXPECT_EQ(original_observed, f.observed);
+}
+
+TEST(TerrainModel, CoplanarSupportRejectsRaisedAndLoweredIslands) {
+  for (float step : {-0.10F, 0.10F, 1.20F}) {
+    SparseSupportFixture f;
+    for (std::size_t i = 0; i < f.heights.size(); ++i)
+      if (f.observed[i] && !f.seed[i]) f.heights[i] += step;
+    const auto evidence = f.measure();
+    EXPECT_FALSE(evidence.valid);
+    EXPECT_EQ(0U, evidence.additional_cells);
+    EXPECT_FALSE(gt::healthyGroundCoverage(evidence.coverage, f.health));
+  }
+}
+
+TEST(TerrainModel, CoplanarSupportUsesRampPlaneInsteadOfConstantHeight) {
+  for (double slope : {20.0, 30.0}) {
+    SparseSupportFixture f;
+    f.heights = planarCandidateHeights(f.geometry, f.observed, 0.51, slope, 35.0);
+    f.plane = gt::estimateConnectedGroundPlane(
+        f.heights, f.seed, f.geometry, gt::GroundPlaneFitParameters());
+    ASSERT_TRUE(f.plane.valid);
+    const auto evidence = f.measure();
+    EXPECT_TRUE(evidence.valid);
+    EXPECT_TRUE(gt::healthyGroundCoverage(evidence.coverage, f.health));
+    EXPECT_EQ(32U, evidence.coverage.connected_cells);
+  }
+}
+
+TEST(TerrainModel, CoplanarSupportCannotRescueInvalidOrLowPlane) {
+  SparseSupportFixture f;
+  for (const auto status : {gt::GroundPlaneFitStatus::kSensorHeightBelowMinimum,
+                           gt::GroundPlaneFitStatus::kSensorHeightAboveMaximum,
+                           gt::GroundPlaneFitStatus::kInsufficientConnectedSamples,
+                           gt::GroundPlaneFitStatus::kExcessiveResidual,
+                           gt::GroundPlaneFitStatus::kFitFailure}) {
+    f.plane.valid = false;
+    f.plane.status = status;
+    EXPECT_FALSE(f.measure().valid);
+  }
+  f.plane.valid = true;
+  f.plane.status = gt::GroundPlaneFitStatus::kValid;
+  f.plane.c = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(f.measure().valid);
+}
+
+TEST(TerrainModel, CoplanarSupportDoesNotBorrowDistantOrUnanchoredGround) {
+  SparseSupportFixture f;
+  f.observed = f.seed;  // Finite but unanchored cells cannot supply evidence.
+  EXPECT_FALSE(f.measure().valid);
+  for (int y = 0; y <= 2; ++y) {
+    for (int x = 0; x <= 2; ++x) {
+      const auto i = coverageIndex(x, y, f.geometry);
+      f.observed[i] = 1U;
+      f.heights[i] = -0.51F;
+    }
+  }
+  const auto evidence = f.measure();
+  EXPECT_FALSE(evidence.valid);
+  EXPECT_EQ(0U, evidence.additional_cells);
+}
+
+TEST(TerrainModel, CoplanarSupportRequiresSeedAgreementAndRejectsBadParameters) {
+  SparseSupportFixture f;
+  for (int y = 6; y <= 7; ++y)
+    for (int x = 12; x <= 15; ++x) f.heights[coverageIndex(x, y, f.geometry)] += .10F;
+  EXPECT_FALSE(f.measure().valid);
+  f.parameters.maximum_plane_distance_m = 0.10;
+  EXPECT_THROW(f.measure(), std::invalid_argument);
+  f.parameters.maximum_plane_distance_m = 0.03;
+  f.observed.pop_back();
+  EXPECT_THROW(f.measure(), std::invalid_argument);
+}
+
 TEST(TerrainModel, GravityAlignmentPreservesYawOnly) {
   const Eigen::Quaterniond input =
       Eigen::AngleAxisd(0.7, Eigen::Vector3d::UnitZ()) *

@@ -4,10 +4,12 @@ No navigation, velocity, SDK, goal, or enable publishers are created.
 """
 import argparse
 import collections
+import hashlib
 import json
 import os
 import signal
 import subprocess
+import struct
 import time
 
 import rosbag
@@ -15,6 +17,7 @@ import rospy
 import yaml
 from diagnostic_msgs.msg import DiagnosticArray
 from sensor_msgs.msg import PointCloud2
+from sensor_msgs import point_cloud2
 
 
 def main():
@@ -40,6 +43,8 @@ def main():
     counts = collections.Counter()
     gate_counts = collections.Counter()
     height_hold_samples = [0]
+    coplanar_support_samples = [0]
+    cloud_hashes = {'obstacles': {}, 'clearing': {}}
     heights, processing = [], []
     start = [None]
 
@@ -51,10 +56,22 @@ def main():
             values = {v.key: v.value for v in item.values}
             gate_counts[values['health_gate_open']] += 1
             height_hold_samples[0] += values.get('height_outlier_held') == 'true'
+            coplanar_support_samples[0] += values.get('health_support_source') == 'observed_coplanar_cells'
             heights.append(float(values['estimated_sensor_height_m']))
             processing.append(float(values['processing_ms']))
 
     sub = rospy.Subscriber('/replay/status', DiagnosticArray, status)
+    def cloud_signature(message, topic):
+        # Ignore PCL alignment/padding bytes; compare actual output coordinates.
+        digest = hashlib.sha256()
+        for point in point_cloud2.read_points(
+                message, field_names=('x', 'y', 'z', 'intensity'), skip_nans=False):
+            digest.update(struct.pack('<ffff', *point))
+        stamp = '%d.%09d' % (message.header.stamp.secs, message.header.stamp.nsecs)
+        cloud_hashes[topic][stamp] = [message.width * message.height, digest.hexdigest()]
+    cloud_subs = [rospy.Subscriber('/replay/' + topic, PointCloud2,
+                                  cloud_signature, callback_args=topic, queue_size=10)
+                  for topic in cloud_hashes]
     pubs = {name: rospy.Publisher('/replay/'+name, PointCloud2, queue_size=2)
             for name in ('ground', 'nonground')}
     with open(args.output+'.node.log', 'w') as log:
@@ -89,6 +106,8 @@ def main():
     result = {'status_counts':dict(counts), 'samples':len(heights),
               'gate_counts':dict(gate_counts),
               'height_hold_samples':height_hold_samples[0],
+              'coplanar_support_samples':coplanar_support_samples[0],
+              'cloud_hashes':cloud_hashes,
               'near_support_radius_m':params['health']['near_support_radius_m'],
               'height_min':min(heights) if heights else None,
               'height_max':max(heights) if heights else None,
