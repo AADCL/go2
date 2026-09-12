@@ -17,11 +17,11 @@
 3. real SDK 启动后默认仍处于 disabled；确认定位、地图、代价地图和目标均正确后，才执行 `enable`。
 4. 任何异常先执行 `run_go2 disable`，再终止主 launch。
 5. 启动 FAST-LIO 时机器人必须静止，等待初始姿态归一化完成后再移动。
-6. 执行 `enable` 前，必须先用遥控器或 App 让 GO2 正常站立并确认四足可正常迈步。`enable` 只读确认本机固件正在使用 `mcf` 高层控制器，不调用 MotionSwitcher、`StandUp()`、`BalanceStand()`、`ClassicWalk()` 或 `FreeAvoid()`；现场对照测试已证明这些姿态/步态切换会使当前固件进入暂时不执行 `Move` 的状态。
+6. 执行 `enable` 前，先用遥控器或 App 让 GO2 正常站立。V2.1.1 在确认 `mcf` 高层控制器后显式请求 `ClassicWalk(true)`，成功回复后放行 Move；不自动选择控制器，也不调用 `StandUp()`、`BalanceStand()` 或 `FreeAvoid()`。经典步态请求成功不代表已通过物理步态反馈确认，首次升级仍需现场观察迈步与爬坡效果。
 7. 电池 SOC 低于 25% 时 bridge 拒绝使能。步态测试建议充至至少 40%～50%，避免低电压影响动态表现。
 8. 地形地图导航还会从实时连通地面估计 MID360 到局部坡面的实际高度。标准工作姿态
-   应在 `0.43-0.59 m`；蹲伏时 `/terrain/healthy=false` 是正确保护，先用遥控器或 App
-   正常站立，不能放宽高度阈值强行使能。
+   启动/恢复连续 5 帧应在 `0.43-0.59 m`；已健康运行时使用 2 cm 滞回，即
+   `0.41-0.61 m`。蹲伏时 `/terrain/healthy=false` 仍是正确保护，先正常站立。
 
 ## 2. 工程结构
 
@@ -55,8 +55,8 @@ go2_nav_ws/
 - FAST-LIO 内部 LiDAR/IMU 平移：`[-0.011, -0.02329, 0.04412]` m，旋转矩阵为单位阵。
 - `base_link -> camera_link`：x=0.35 m，y=0，z=0.10 m；D435i 当前不参与定位和导航。
 - GO2 footprint：0.70 m × 0.31 m。
-- 当前室内验证上限：vx≤0.45 m/s，vy=0，|wz|≤0.30 rad/s。没有完全取消硬件边界，避免局部规划异常时向底盘发送无界速度。
-- 禁止规划器主动倒车。实机日志确认约 0.03～0.15 m/s 时不能稳定抬脚，因此速度整形器把非零前进目标提高到 0.20 m/s，再按 0.50 m/s² 的加速度限制平滑升降；SDK bridge 不再二次硬抬速度。转向死区降为 0.01 rad/s，TEB 的小角度路径修正会在 SDK 端提升至最低 0.04 rad/s，而不再被完全清零。
+- 当前配置上限：前进 vx≤0.60 m/s，倒车速度≤0.18 m/s，vy=0，|wz|≤0.80 rad/s；这次步态修复未改变这些既有速度参数。
+- 允许规划器受限倒车。速度整形器持续前进目标下限为 0.30 m/s，倒车为 0.12 m/s，前进加速度上限为 0.60 m/s²；SDK bridge 不二次硬抬前进速度。原地转向整形下限为 0.50 rad/s，并保留换向滞回；SDK 转向死区为 0.01 rad/s，最小有效目标为 0.04 rad/s。
 
 这些参数是从旧工程迁移并明确固化的当前值；Mid-360 安装状态仍标记为 `provisional_preserved`，以后重新标定时只需更新唯一的外参文件和 FAST-LIO 内部外参。
 
@@ -328,20 +328,21 @@ run_go2 enable
 `enable` 只有在以下步骤全部成功后才会真正放行速度：
 
 1. 丢弃启用前缓存的所有速度；
-2. 检查底盘电池 SOC 不低于 25%；
+2. 检查定位健康、底盘电池 SOC 不低于 25%，并确认两路 DDS 遥测在 0.50 秒内更新；
 3. 通过 Unitree MotionSwitcher 查询当前控制模式；
 4. 只读确认当前模式是本机固件实际注册的 `mcf`，不自动切换控制器；
-5. 不调用任何姿态或 gait 切换 API，保持操作者已经验证可行走的底盘状态；
-6. 发送一次零速 `Move(0,0,0)`，再次确认控制器仍为 `mcf` 后才置为 enabled。后续速度使用 `Move(vx, vy, vyaw)`。
+5. 发送零速 `Move(0,0,0)`，再显式调用 `ClassicWalk(true)`（API 2049），要求成功回复；
+6. 等待 0.30 秒，再次确认控制器仍为 `mcf` 且没有可见的模式接管后才置为 enabled。后续速度仍使用 `Move(vx, vy, vyaw)`，不周期性重发步态切换。
 
 如果任一步失败，bridge 会保持 disabled，并在终端明确打印失败原因；此时不要重复发布目标，也不要连续反复执行 `enable`。把启动终端中的错误信息保存下来排查。
 
 成功日志应包含类似内容：
 
 ```text
+ClassicWalk(true), API 2049, acknowledged by MCF. Firmware gait feedback is unavailable; acknowledgement is not a measured gait confirmation.
 Unitree motion controller confirmed [mcf]
-GO2 direct Move control armed: controller=mcf; no posture or gait transition API was called
-REAL GO2 motion bridge ENABLED for direct Move control in mcf
+GO2 Move preparation complete: controller=mcf gait_policy=classic_mcf.
+REAL GO2 motion bridge ENABLED: classic_mcf.
 ```
 
 随后再检查：
@@ -350,7 +351,7 @@ REAL GO2 motion bridge ENABLED for direct Move control in mcf
 rostopic echo -n 1 /go2/diagnostics
 ```
 
-其中应看到 `gait_mode=direct_mcf`、`allow_motion_mode_switch=false`、`required_motion_mode=mcf`、`active_motion_mode=mcf`、`motion_enabled=true`、`last_move_sdk_result=0` 和 `last_gait_error` 为空。此时才发送一个 0.5～1.0 m、方向明确、周围无障碍的直线测试目标。需要停止时：
+其中应看到 `gait_mode=classic_mcf`、`classic_sdk_result=0`、`classic_request_accepted=true`、`allow_motion_mode_switch=false`、`required_motion_mode=mcf`、`active_motion_mode=mcf`、`motion_enabled=true`、`last_move_sdk_result=0` 和 `last_gait_error` 为空。`classic_feedback_verified=false` 表示本机固件缺少可验证的步态反馈，不表示 API 请求失败。此时再现场测试一个 0.5～1.0 m 的直线目标。需要停止时：
 
 ```bash
 run_go2 disable
@@ -358,7 +359,7 @@ run_go2 disable
 
 `disable` 会立即发送 `StopMove` 并锁住后续运动命令；不能以关闭终端代替安全停机。
 
-`enable` 会主动丢弃启用前缓存的所有速度，但不会调用 `StopMove` 或姿态切换 API；它以 `Move(0,0,0)` 进入并保持已站立控制态。因此正确顺序必须是“reset → enable → 发布新目标”；启用之前产生的速度不会被执行。
+`enable` 会主动丢弃启用前缓存的所有速度，再准备经典步态；部分失败路径会调用 `StopMove`。正确顺序仍是“reset → enable → 发布新目标”。发生可见的外部步态/姿态/控制器 API 接管时，bridge 停止继续发送 Move，需要人工重新 Enable。详细证据与测试步骤见 [经典步态与坡道误停修复](docs/DEPLOYMENT_CLASSIC_GAIT_20260911.md)。
 
 ## 8. TF 与 Topic 正式约定
 
@@ -405,11 +406,11 @@ map -> odom -> base_link -> lidar_link
 - NDT 检查收敛状态、fitness、矩阵有限性、单次位置/角度跳变和匹配超时。
 - localization guard 对全局位姿做第二层连续性检查，连续正常后才允许导航。
 - navigation supervisor 在定位从正常变为异常时取消目标并发送零速度。
-- velocity shaper 禁止倒车和横移，限制速度/加速度，并在 0.5 s 无新命令时归零。
+- velocity shaper 允许受限倒车、禁止横移，限制速度/加速度，并在 0.5 s 无新命令时归零。
 - real SDK bridge 再次检查定位状态和命令超时；启动默认 disabled。
-- real SDK bridge 在每次成功 `enable` 前只读确认实际控制器为本机已注册的 `mcf`，但保持机器人已经站立且经遥控器验证的运动状态，不再调用姿态或 gait 切换 API。现场返回码 `7004` 已证明 `normal`、`sport_mode` 和 `ai` 都不是这台固件接受的选择名，因此默认禁止自动切换控制器。
-- 非零速度持续 3 秒后，bridge 会同时检查 12 个关节的运动速度和四足是否出现卸载。SDK 若返回成功但没有真实迈步响应，bridge 会自动 disabled 并发送 `StopMove`；诊断中 `no_step_response=true`。
-- Bridge 在 enabled 期间，无目标、TEB 零速和命令超时均持续发送 `Move(0,0,0)`，不再反复退出和重入底盘运动状态机。只有显式 disable、定位丢失、no-step watchdog 或节点退出才发送 `StopMove`。SDK 控制频率为 20 Hz，并保留转向换向滞回。
+- real SDK bridge 在每次 `enable` 前确认已注册的 `mcf` 并显式请求 `ClassicWalk(true)`，不自动选择控制器。此前 `normal`、`sport_mode` 和 `ai` 返回 `7004`，不再使用这些名称试错。
+- 无有效迈步响应持续至当前 6 秒门限时，bridge 会 disabled 并发送 `StopMove`；诊断中 `no_step_response=true`。纯转向仍要求卸载证据，短零速脉冲不能重置监测窗口。
+- Bridge 在 enabled 期间，无目标、TEB 零速和命令超时均发送 `Move(0,0,0)`。SDK Move 频率保持 200 Hz，速度整形器为 20 Hz。显式 disable、定位丢失、no-step 或节点退出仍发送 `StopMove`；外部模式/姿态 API 接管时停止继续发 Move，避免覆盖人工接管。
 
 ### 9.1 查看 GO2 底盘与电池状态
 
@@ -473,9 +474,10 @@ ls -lh /home/nvidia/go2_nav_ws/maps/<map_name>/
 rostopic echo -n 1 /terrain/status
 ```
 
-若提示 `estimated MID360 height is below the configured minimum`，说明机器人仍处于
-低姿态，或实际安装/地面参考异常；先恢复标准站姿并检查外参。若提示地面平面样本、
-几何或残差不合格，检查雷达遮挡和附近地面，不能直接关闭地形健康门。
+若提示 `estimated MID360 height ... is below minimum`，查看估计高度和活动门限，
+结合实际站姿、安装与坡道过渡检查原因。V2.1.1 启动下限为 0.43 m，已健康运行时
+为 0.41 m；不能把所有高度越界都判成蹲伏。若平面样本、几何或残差不合格，检查
+雷达遮挡和附近地面；停止输入后地形保护仍会关闭。
 
 ### real bridge 无法连接 GO2
 
@@ -483,7 +485,7 @@ rostopic echo -n 1 /terrain/status
 
 ### 机器人抽搐或速度突变
 
-先 disable，记录 `/cmd_vel_nav`、`/cmd_vel_safe`、`/go2/state/low_state` 和 `/go2/diagnostics`。确认 `gait_mode=direct_mcf`、`allow_motion_mode_switch=false`、`active_motion_mode=mcf`、`last_move_sdk_result=0` 和 `no_step_response=false`。本机 `/go2/state/sport_mode` 在不同姿态阶段报告过 `error_code=100` 和 `1002`；该字段没有随 SDK 提供枚举，不能把它单独解释为成功或失败，也不能只用 `gait_type` 和抬脚高度判断是否迈步，应以 `low_state` 的关节速度和四足受力为准。新链最大前进速度为 0.45 m/s，最低持续步行目标为 0.20 m/s，并由速度整形器平滑升降；若 `/cmd_vel_nav` 本身振荡，应调 TEB/代价地图，而不是继续移除底盘安全边界。
+先 disable，记录 `/cmd_vel_nav`、`/cmd_vel_safe`、`/go2/state/low_state` 和 `/go2/diagnostics`。确认 `gait_mode=classic_mcf`、`classic_sdk_result=0`、`allow_motion_mode_switch=false`、`active_motion_mode=mcf`、`last_move_sdk_result=0` 和 `no_step_response=false`。本机正常运动时 `mode/gait_type/foot_raise_height` 也可能全为 0，不能据此判断经典步态未切换；应结合关节运动、四足受力和现场观察。当前最大前进速度 0.60 m/s，持续步行目标下限 0.30 m/s，倒车上限 0.18 m/s；这些是既有配置，V2.1.1 未调速。若坡道目标被取消，同时检查 `/terrain/status` 的拟合高度、活动门限和输入新鲜度。
 
 ### 隔离导航链测试官方底盘 Move
 
@@ -501,7 +503,7 @@ run_go2 chassis-self-test
 run_go2 chassis-standing-test
 ```
 
-该对照项跳过 `StandUp()`，其余速度、频率、持续时间和停止保护完全相同。现场结果为最大关节速度 `6.67 rad/s`、足端力降至 0，确认直接 `Move` 可以形成完整步态；因此正式 bridge 采用相同的“已站立直接控制”路径。两项测试都会同步记录遥控器活动和 SportModeState，且只允许在完整 navigation launch 已退出、前方场地清空时执行。
+该对照项跳过 `StandUp()`，其余速度、频率、持续时间和停止保护完全相同。历史现场结果为最大关节速度 `6.67 rad/s`、足端力降至 0，证明直接 `Move` 可以迈步，但不能确认当时使用经典步态。V2.1.1 的正式 bridge 会在 Move 准备阶段额外请求经典步态；该旧对照工具不能代替新版 Enable 的验收。两项测试只允许在完整 navigation launch 已退出、前方场地清空时执行。
 
 ### 稍远目标未到终点就停止
 
@@ -527,7 +529,7 @@ run_go2 enable
 rostopic echo -n 1 /go2/diagnostics
 ```
 
-诊断必须显示 `motion_enabled=true`、`localization_ok=true`、`gait_mode=direct_mcf`、`active_motion_mode=mcf` 和 `no_step_response=false`。按以下顺序测试，每一步都等待 `/move_base/status` 给出结果：
+诊断应显示 `motion_enabled=true`、`localization_ok=true`、`gait_mode=classic_mcf`、`classic_sdk_result=0`、`classic_request_accepted=true`、`active_motion_mode=mcf` 和 `no_step_response=false`。按以下顺序测试，每一步都等待 `/move_base/status` 给出结果：
 
 1. 发布前方 0.5～0.8 m、朝向基本不变的直线目标；
 2. 第一目标完成后等待 3～5 秒，不重新 enable，发布第二个前方 0.5～0.8 m 目标，验证 `Move(0,0,0)` 保持控制态后可以连续起步；

@@ -179,6 +179,8 @@ class TerrainGuard {
                ground_plane_fit_.minimum_sensor_height_m, 0.43);
     pnh_.param("health/max_sensor_height_m",
                ground_plane_fit_.maximum_sensor_height_m, 0.59);
+    pnh_.param("health/sensor_height_hysteresis_m",
+               sensor_height_hysteresis_m_, 0.02);
     pnh_.param("health/open_after_consecutive_healthy_frames",
                health_hysteresis_parameters_.opening_healthy_frames, 5);
     pnh_.param("health/max_soft_geometry_failure_frames",
@@ -242,6 +244,8 @@ class TerrainGuard {
         ground_plane_fit_.minimum_sensor_height_m <= 0.0 ||
         ground_plane_fit_.maximum_sensor_height_m <
             ground_plane_fit_.minimum_sensor_height_m ||
+        !std::isfinite(sensor_height_hysteresis_m_) ||
+        sensor_height_hysteresis_m_ < 0.0 || sensor_height_hysteresis_m_ > 0.03 ||
         health_hysteresis_parameters_.opening_healthy_frames < 1 ||
         health_hysteresis_parameters_.maximum_soft_failure_frames < 0 ||
         health_hysteresis_parameters_.maximum_soft_failure_duration_sec <
@@ -478,9 +482,12 @@ class TerrainGuard {
             candidate_heights, connected_ground,
             surface_candidate_heights, surface_samples,
             ground_connectivity_, steep_surface_);
+    active_ground_plane_fit_ = go2_terrain::groundPlaneFitForHealthGate(
+        ground_plane_fit_, health_hysteresis_state_.gate_open,
+        sensor_height_hysteresis_m_);
     last_ground_plane_ = go2_terrain::estimateConnectedGroundPlane(
         candidate_heights, connected_ground, ground_connectivity_,
-        ground_plane_fit_);
+        active_ground_plane_fit_);
     for (std::size_t index = 0; index < cells.size(); ++index) {
       cells[index].valid = connected_ground[index] != 0U;
     }
@@ -646,7 +653,7 @@ class TerrainGuard {
           frame_reason_ = "estimated MID360 height " +
                           asString(last_ground_plane_.sensor_height_m) +
                           " m is below minimum " +
-                          asString(ground_plane_fit_.minimum_sensor_height_m) +
+                          asString(active_ground_plane_fit_.minimum_sensor_height_m) +
                           " m";
           break;
         case go2_terrain::GroundPlaneFitStatus::
@@ -654,7 +661,7 @@ class TerrainGuard {
           frame_reason_ = "estimated MID360 height " +
                           asString(last_ground_plane_.sensor_height_m) +
                           " m is above maximum " +
-                          asString(ground_plane_fit_.maximum_sensor_height_m) +
+                          asString(active_ground_plane_fit_.maximum_sensor_height_m) +
                           " m";
           break;
         case go2_terrain::GroundPlaneFitStatus::kValid:
@@ -787,6 +794,12 @@ class TerrainGuard {
     status.values.push_back(keyValue(
         "maximum_sensor_height_m",
         asString(ground_plane_fit_.maximum_sensor_height_m)));
+    status.values.push_back(keyValue("sensor_height_hysteresis_m",
+                                    asString(sensor_height_hysteresis_m_)));
+    status.values.push_back(keyValue("active_minimum_sensor_height_m",
+        asString(active_ground_plane_fit_.minimum_sensor_height_m)));
+    status.values.push_back(keyValue("active_maximum_sensor_height_m",
+        asString(active_ground_plane_fit_.maximum_sensor_height_m)));
     status.values.push_back(keyValue(
         "ground_plane_slope_deg", asString(last_ground_plane_.slope_deg)));
     status.values.push_back(keyValue(
@@ -870,6 +883,8 @@ class TerrainGuard {
   go2_terrain::GroundConnectivityParameters ground_connectivity_;
   go2_terrain::GroundHealthParameters ground_health_;
   go2_terrain::GroundPlaneFitParameters ground_plane_fit_;
+  go2_terrain::GroundPlaneFitParameters active_ground_plane_fit_;
+  double sensor_height_hysteresis_m_ = 0.02;
   go2_terrain::TerrainHealthHysteresisParameters
       health_hysteresis_parameters_;
   go2_terrain::TerrainHealthHysteresisState health_hysteresis_state_;

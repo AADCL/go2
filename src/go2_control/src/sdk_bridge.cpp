@@ -13,6 +13,7 @@
 #include <go2_control/Go2BmsState.h>
 #include <go2_control/Go2LowState.h>
 #include <go2_control/Go2SportState.h>
+#include <go2_control/classic_gait.hpp>
 
 #include <unitree/idl/go2/LowState_.hpp>
 #include <unitree/idl/go2/SportModeState_.hpp>
@@ -20,6 +21,8 @@
 #include <unitree/robot/channel/channel_subscriber.hpp>
 #include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
 #include <unitree/robot/go2/sport/sport_client.hpp>
+#include <unitree/robot/internal/internal_idl_decl/Request_.hpp>
+#include <unitree/common/json/jsonize.hpp>
 
 #include <algorithm>
 #include <array>
@@ -30,6 +33,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 
 namespace
 {
@@ -70,8 +74,8 @@ public:
     pnh_.param<std::string>("command_topic", command_topic_, "/cmd_vel_safe");
     pnh_.param<std::string>("localization_ok_topic", localization_ok_topic_,
                             "/localization/ok");
-    pnh_.param<std::string>("network_interface", network_interface_, "eth1");
-    pnh_.param<std::string>("gait_mode", gait_mode_, "direct_mcf");
+    pnh_.param<std::string>("network_interface", network_interface_, "eth0");
+    pnh_.param<std::string>("gait_mode", gait_mode_, "classic_mcf");
     pnh_.param("allow_motion_mode_switch", allow_motion_mode_switch_, false);
     pnh_.param<std::string>("motion_mode_selector", motion_mode_selector_,
                             "");
@@ -101,11 +105,9 @@ public:
     pnh_.param("require_foot_unload_for_pure_turn",
                require_foot_unload_for_pure_turn_, true);
 
-    if (gait_mode_ != "direct_mcf")
+    if (gait_mode_ != "direct_mcf" && gait_mode_ != "classic_mcf")
     {
-      ROS_WARN("Unsupported gait_mode [%s]; using direct Move control in mcf.",
-               gait_mode_.c_str());
-      gait_mode_ = "direct_mcf";
+      throw std::invalid_argument("gait_mode must be classic_mcf or direct_mcf");
     }
 
     ROS_WARN("Initializing Unitree ChannelFactory on [%s]",
@@ -160,6 +162,17 @@ public:
     sport_state_subscriber_->InitChannel(
         std::bind(&Go2SdkBridgeReal::sportStateCallback, this,
                   std::placeholders::_1), 1);
+
+    // Observe competing mode/posture commands without replacing the remote's
+    // command. ClassicWalk is a latched selection, not a 200 Hz keepalive.
+    sport_request_subscriber_.reset(new unitree::robot::ChannelSubscriber<
+        unitree_api::msg::dds_::Request_>("rt/api/sport/request"));
+    sport_request_subscriber_->InitChannel(
+        [this](const void* data) { modeRequestCallback(data, false); }, 10);
+    switch_request_subscriber_.reset(new unitree::robot::ChannelSubscriber<
+        unitree_api::msg::dds_::Request_>("rt/api/motion_switcher/request"));
+    switch_request_subscriber_->InitChannel(
+        [this](const void* data) { modeRequestCallback(data, true); }, 10);
 
     control_timer_ = nh_.createTimer(
         ros::Duration(1.0 / std::max(1.0, control_rate_hz_)),
@@ -296,7 +309,29 @@ private:
     last_gait_error_.clear();
     if (!ensureRequiredMotionMode()) return false;
 
-    const int32_t move_result = sport_client_->Move(0.0f, 0.0f, 0.0f);
+    int32_t move_result = 0;
+    if (gait_mode_ == "classic_mcf")
+    {
+      const auto result = go2_control::requestClassicWalk(*sport_client_);
+      move_result = result.zero_result;
+      classic_sdk_result_.store(result.classic_result);
+      if (!result.accepted())
+      {
+        last_gait_error_ = "ClassicWalk(true) preparation failed: zero SDK=" +
+            asString(result.zero_result) + ", classic SDK=" +
+            asString(result.classic_result);
+        return false;
+      }
+      classic_request_accepted_.store(true);
+      last_classic_request_wall_.store(ros::WallTime::now().toSec());
+      // No Move/StandUp/gait toggles during the selection settling interval.
+      ros::WallDuration(0.30).sleep();
+      ROS_WARN("ClassicWalk(true), API 2049, acknowledged by MCF. Firmware gait feedback is unavailable; acknowledgement is not a measured gait confirmation.");
+    }
+    else
+    {
+      move_result = sport_client_->Move(0.0f, 0.0f, 0.0f);
+    }
     last_move_result_.store(move_result);
     if (move_result != 0)
     {
@@ -308,9 +343,41 @@ private:
 
     if (!verifyRequiredMotionMode()) return false;
 
-    ROS_WARN("GO2 direct Move control armed: controller=%s; no posture or gait transition API was called.",
-             current_motion_mode_.c_str());
+    if (mode_override_api_.load() != 0)
+    {
+      last_gait_error_ = "external mode/posture request during arming, API=" +
+          asString(mode_override_api_.load());
+      return false;
+    }
+    ROS_WARN("GO2 Move preparation complete: controller=%s gait_policy=%s.",
+             current_motion_mode_.c_str(), gait_mode_.c_str());
     return true;
+  }
+
+  void modeRequestCallback(const void* data, bool switcher)
+  {
+    if (gait_mode_ != "classic_mcf" ||
+        (!enabled_.load() && !arming_.load())) return;
+    const auto& request =
+        *static_cast<const unitree_api::msg::dds_::Request_*>(data);
+    const int64_t api = request.header().identity().api_id();
+    if (switcher ? (api != 1002 && api != 1003)
+                 : !go2_control::changesSportMode(api)) return;
+    if (!switcher && api == 2049)
+    {
+      try
+      {
+        unitree::common::JsonMap parameter;
+        unitree::common::FromJsonString(request.parameter(), parameter);
+        const auto found = parameter.find("data");
+        bool on = false;
+        if (found != parameter.end()) unitree::common::FromJson(found->second, on);
+        if (on) return;  // Ours or an external request for the same policy.
+      }
+      catch (...) {}  // An undecodable mode command is not proof of classic.
+    }
+    mode_override_api_.store(switcher ? -api : api);
+    classic_request_accepted_.store(false);
   }
 
   double shapeForwardVelocity(double vx) const
@@ -361,6 +428,9 @@ private:
   bool enableCallback(std_srvs::SetBool::Request& request,
                       std_srvs::SetBool::Response& response)
   {
+    arming_.store(false);
+    classic_request_accepted_.store(false);
+    mode_override_api_.store(0);
     commanded_motion_active_.store(false);
     last_nonzero_command_wall_.store(0.0);
     commanded_vx_.store(0.0);
@@ -399,11 +469,24 @@ private:
       ROS_ERROR("%s", response.message.c_str());
       return true;
     }
-    if (!prepareDirectMoveControl())
+    const double now = ros::WallTime::now().toSec();
+    if (now - last_low_state_rx_.load() > 0.50 ||
+        now - last_sport_state_rx_.load() > 0.50)
     {
-      stopRobot();
       response.success = false;
-      response.message = "Cannot enable direct Move control in mcf: " +
+      response.message = "Cannot enable: current DDS telemetry is unavailable.";
+      return true;
+    }
+    arming_.store(true);
+    const bool prepared = prepareDirectMoveControl();
+    arming_.store(false);
+    if (!prepared)
+    {
+      // Do not counteract a remote Damp/StandDown/controller takeover.
+      if (mode_override_api_.load() == 0) stopRobot();
+      classic_request_accepted_.store(false);
+      response.success = false;
+      response.message = "Cannot enable " + gait_mode_ + ": " +
           last_gait_error_ + ".";
       return true;
     }
@@ -414,15 +497,29 @@ private:
     enabled_.store(true);
     publishControlEnabled(true);
     response.success = true;
-    response.message =
-        "REAL GO2 SDK bridge enabled for direct Move control in mcf; waiting for a new command.";
-    ROS_WARN("REAL GO2 motion bridge ENABLED for direct Move control in mcf.");
+    response.message = "REAL GO2 SDK bridge enabled: " + gait_mode_ +
+        "; waiting for a new command. Classic mode uses SDK acknowledgement; firmware gait feedback is not available.";
+    ROS_WARN("REAL GO2 motion bridge ENABLED: %s.", gait_mode_.c_str());
     return true;
   }
 
   void controlCallback(const ros::TimerEvent&)
   {
     if (!sport_client_ || !enabled_.load()) return;
+    if (gait_mode_ == "classic_mcf" &&
+        (!classic_request_accepted_.load() || mode_override_api_.load() != 0))
+    {
+      enabled_.store(false);
+      publishControlEnabled(false);
+      commanded_motion_active_.store(false);
+      commanded_vx_.store(0.0);
+      commanded_wz_.store(0.0);
+      last_gait_error_ = "classic policy invalidated by external mode/posture API " +
+          asString(mode_override_api_.load()) + "; manual Enable required";
+      // Cease publishing so a manual Stop/Damp/StandDown is not overwritten.
+      ROS_ERROR("%s", last_gait_error_.c_str());
+      return;
+    }
     if (!localization_ok_.load())
     {
       commanded_motion_active_.store(false);
@@ -809,6 +906,13 @@ private:
     status.values.push_back(keyValue("required_motion_mode", required_motion_mode_));
     status.values.push_back(keyValue("active_motion_mode", current_motion_mode_));
     status.values.push_back(keyValue("last_gait_error", last_gait_error_));
+    status.values.push_back(keyValue("classic_api_id", "2049"));
+    status.values.push_back(keyValue("classic_sdk_result", asString(classic_sdk_result_.load())));
+    status.values.push_back(keyValue("classic_request_accepted", classic_request_accepted_.load() ? "true" : "false"));
+    status.values.push_back(keyValue("classic_feedback_verified", "false"));
+    status.values.push_back(keyValue("classic_feedback_note", "MCF mode/gait fields and GetState do not confirm gait on this firmware"));
+    status.values.push_back(keyValue("last_classic_request_age_sec", last_classic_request_wall_.load() > 0.0 ? asString(now-last_classic_request_wall_.load()) : "not_requested"));
+    status.values.push_back(keyValue("mode_override_api", asString(mode_override_api_.load())));
     status.values.push_back(keyValue("last_move_sdk_result", asString(last_move_result_.load())));
     status.values.push_back(keyValue("control_rate_hz", asString(control_rate_hz_)));
     status.values.push_back(keyValue("motion_command_active",
@@ -888,6 +992,13 @@ private:
       low_state_subscriber_;
   unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::SportModeState_>
       sport_state_subscriber_;
+  unitree::robot::ChannelSubscriberPtr<unitree_api::msg::dds_::Request_>
+      sport_request_subscriber_, switch_request_subscriber_;
+  std::atomic<bool> arming_{false};
+  std::atomic<bool> classic_request_accepted_{false};
+  std::atomic<int32_t> classic_sdk_result_{-1};
+  std::atomic<int64_t> mode_override_api_{0};
+  std::atomic<double> last_classic_request_wall_{0.0};
 
   std::atomic<bool> enabled_;
   std::atomic<bool> localization_ok_;

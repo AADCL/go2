@@ -7,7 +7,7 @@
 <p align="center">Livox Mid-360 · FAST-LIO · NDT-OMP · move_base/TEB · Unitree SDK2</p>
 
 <p align="center">
-  <img alt="版本" src="https://img.shields.io/badge/version-2.1.0-1677ff">
+  <img alt="版本" src="https://img.shields.io/badge/version-2.1.1-1677ff">
   <img alt="ROS" src="https://img.shields.io/badge/ROS-Noetic-22314E">
   <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-20.04-E95420">
   <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-14-00599C">
@@ -15,9 +15,9 @@
 
 本仓库是 Unitree GO2 EDU 与 Livox Mid-360 的 ROS Noetic 端侧工作空间，提供一条命令启动的动态过滤三维建图，以及基于保存地图的重定位、全局坡度规划、局部实时避障和真机控制。自研代码集中在七个 `go2_*` 功能包中，机器人外参由单一配置文件管理。
 
-**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [通用导出修复](docs/TERRAIN_EXPORT_REVISION2_20260910.md) · [V2.1.0 发布说明](docs/RELEASE_NOTES_V2.1.0.md) · [第三方版本](THIRD_PARTY.md)
+**快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [地形优化说明](TERRAIN_OPTIMIZATION_GUIDE.md) · [经典步态与坡道误停修复](docs/DEPLOYMENT_CLASSIC_GAIT_20260911.md) · [V2.1.1 发布说明](docs/RELEASE_NOTES_V2.1.1.md) · [第三方版本](THIRD_PARTY.md)
 
-> V2.1.0 对应 2026-09-10 机器狗 1 的端侧状态。通用地形导出改为连续地面相对高度分类，修复上下坡被投影为障碍、墙边缺少地面时丢失墙线的问题，PGM 和六层地形资产统一生成。两张室外 `real_202609101532` / `real_202609101620` 地图已在原目录重新导出并校验；历史地图、提交及 `v2.0.0`、`v2.0.1` 标签保留。
+> V2.1.1 对应 2026-09-11 机器狗 1 已部署、编译和回放验证的代码，发布前于 2026-09-12 再次核对源码。Enable 显式请求 `ClassicWalk(true)`；地形高度检查增加 2 cm 运行滞回，修复录制中坡道目标被误取消的问题。112 个测试通过，原启动命令、地图和外参保留。经典步态的实际抬腿与爬坡效果仍待现场验收，固件反馈不能确认物理步态。此前 V2.1.0 的坡面/墙体地图导出修复及全部历史版本继续保留。
 
 ## 核心能力
 
@@ -27,7 +27,7 @@
 | 二维/地形地图 | PGM/YAML 与 elevation、slope、roughness、step、cost、confidence 六层 2.5D 资产 |
 | 重定位 | NDT-OMP 匹配、`map -> odom` 唯一发布、位姿跳变限制和定位健康检测 |
 | 路径规划 | `move_base`、GlobalPlanner、全局坡度代价、TEB、Patchwork++ 局部实时避障 |
-| 真机控制 | 连续速度整形、Unitree SDK2 SportClient、命令超时、步态响应监测 |
+| 真机控制 | Enable 请求经典步态、连续速度整形、Unitree SDK2 SportClient、命令超时与步态响应监测 |
 | 安全门控 | 定位与底盘状态联合准入、旧目标清理、失效停车、电量门槛和诊断输出 |
 | 一键启动 | `run_go2` 自动加载 ROS 和工作空间，统一管理建图、导航、地图与底盘状态 |
 
@@ -249,6 +249,8 @@ roll = -0.1 deg, pitch = 39.0 deg, yaw = 0.0 deg
 | [STARTUP_GUIDE.md](STARTUP_GUIDE.md) | 建图、地图导出、重定位、导航、真机测试与故障排查 |
 | [TERRAIN_OPTIMIZATION_GUIDE.md](TERRAIN_OPTIMIZATION_GUIDE.md) | 动态建图、地形导出、全局坡度与局部地面分类 |
 | [V2.1.0 发布说明](docs/RELEASE_NOTES_V2.1.0.md) | 通用坡面/墙体导出修复、回归结果与兼容范围 |
+| [V2.1.1 发布说明](docs/RELEASE_NOTES_V2.1.1.md) | 经典步态请求、高度滞回和隔离 bag 回放验证 |
+| [经典步态修复与验收](docs/DEPLOYMENT_CLASSIC_GAIT_20260911.md) | 日志根因、诊断字段、原流程测试和回滚 |
 | [通用导出修复](docs/TERRAIN_EXPORT_REVISION2_20260910.md) | revision 2 参数、质量检查、备份与回滚 |
 | [WheelTech 算法对比](docs/WHEELTECH_ALGORITHM_COMPARISON_20260909.md) | 两套系统在算法和安全架构上的共同点、差异与后续建议 |
 | [V2.0.1 发布说明](docs/RELEASE_NOTES_V2.0.1.md) | 最终地形门限的工作空间校验补丁 |

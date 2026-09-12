@@ -30,7 +30,8 @@
       <param name="stop_deadband_wz" value="0.01"/>
       <!-- Unitree's official GO2 SportClient example refreshes Move at 200 Hz. -->
       <param name="control_rate_hz" value="200.0"/>
-      <param name="gait_mode" value="direct_mcf"/>
+      <!-- Enable explicitly requests ClassicWalk(true), while Move remains at 200 Hz. -->
+      <param name="gait_mode" value="classic_mcf"/>
       <param name="allow_motion_mode_switch" value="false"/>
       <param name="motion_mode_selector" value=""/>
       <param name="required_motion_mode" value="mcf"/>

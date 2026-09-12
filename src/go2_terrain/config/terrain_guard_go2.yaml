@@ -19,7 +19,7 @@ surface:
   # The 39-degree forward MID360 mount can have sparse, non-repeating floor
   # returns close to the sensor, so anchors may be found within 1.2 m. The
   # 0.25 m candidate tolerance lets an unsafe low stance remain observable;
-  # the independent 0.43-0.59 m fitted-height gate still rejects it outright.
+  # the independent fitted-height gate still rejects a genuinely low stance.
   anchor_radius: 1.20
   anchor_height_tolerance: 0.25
   anchor_seed_height_band: 0.05
@@ -61,7 +61,8 @@ health:
   minimum_cells_per_sector: 2
   # Fit z=ax+by+c to the selected near-field ground component every frame.
   # The intercept is the measured MID360 height above the local ramp plane;
-  # it must stay inside the mechanically validated standing-height envelope.
+  # Startup/recovery uses the nominal envelope. Once healthy, a small bounded
+  # hysteresis tolerates gait bounce and plane bias at ramp transitions.
   ground_plane_min_connected_cells: 12
   ground_plane_maximum_radius_m: 1.50
   ground_plane_min_planar_variance_m2: 0.01
@@ -70,6 +71,9 @@ health:
   ground_plane_irls_iterations: 5
   min_sensor_height_m: 0.43
   max_sensor_height_m: 0.59
+  # 0.43-0.59 m to open; 0.41-0.61 m to remain open. Never bypasses RMSE,
+  # connected-ground, sparse-data, frequency or timeout checks.
+  sensor_height_hysteresis_m: 0.02
   # Arming needs five clean frames. An already-open gate tolerates no more
   # than three consecutive geometry-only misses and never for over 0.25 s.
   open_after_consecutive_healthy_frames: 5

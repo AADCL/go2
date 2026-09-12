@@ -83,6 +83,24 @@ struct GroundPlaneFitParameters {
   double maximum_sensor_height_m = 0.59;
 };
 
+// Schmitt bounds: startup/recovery stays strict; a healthy running gate gets
+// a small height margin for stance oscillation and ramp-transition fit bias.
+// This changes no ground classification, plane-quality or stale-data checks.
+inline GroundPlaneFitParameters groundPlaneFitForHealthGate(
+    const GroundPlaneFitParameters& configured, bool gate_open,
+    double height_hysteresis_m) {
+  if (!std::isfinite(height_hysteresis_m) || height_hysteresis_m < 0.0 ||
+      height_hysteresis_m > 0.03) {
+    throw std::invalid_argument("sensor height hysteresis must be 0-0.03 m");
+  }
+  auto effective = configured;
+  if (gate_open) {
+    effective.minimum_sensor_height_m -= height_hysteresis_m;
+    effective.maximum_sensor_height_m += height_hysteresis_m;
+  }
+  return effective;
+}
+
 struct GroundPlaneEstimate {
   bool valid = false;
   GroundPlaneFitStatus status =

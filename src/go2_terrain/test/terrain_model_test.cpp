@@ -336,6 +336,73 @@ TEST(TerrainModel, RejectsTooFewConnectedGroundSamples) {
   EXPECT_EQ(4U, estimate.sample_count);
 }
 
+TEST(TerrainModel, RecordedRampHeightsPassOnlyAfterHealthyStartup) {
+  const auto geometry = coverageGeometry();
+  const auto mask = annularGroundMask(geometry);
+  const gt::GroundPlaneFitParameters configured;
+  for (double height : {0.429955, 0.4216, 0.420934, 0.60}) {
+    const auto cloud = planarCandidateHeights(geometry, mask, height, 6.1);
+    EXPECT_FALSE(gt::estimateConnectedGroundPlane(cloud, mask, geometry,
+        gt::groundPlaneFitForHealthGate(configured, false, 0.02)).valid);
+    EXPECT_TRUE(gt::estimateConnectedGroundPlane(cloud, mask, geometry,
+        gt::groundPlaneFitForHealthGate(configured, true, 0.02)).valid);
+  }
+}
+
+TEST(TerrainModel, HeightHysteresisStillRejectsUnsafeStanceAndBadPlane) {
+  const auto geometry = coverageGeometry();
+  const auto mask = annularGroundMask(geometry);
+  const auto fit = gt::groundPlaneFitForHealthGate(
+      gt::GroundPlaneFitParameters(), true, 0.02);
+  for (double height : {0.31, 0.39, 0.63}) {
+    const auto cloud = planarCandidateHeights(geometry, mask, height, 6.1);
+    const auto plane = gt::estimateConnectedGroundPlane(cloud, mask, geometry, fit);
+    EXPECT_FALSE(plane.valid);
+    EXPECT_EQ(gt::TerrainFrameHealthClass::kHardFailure,
+        gt::classifyTerrainFrameHealth(true, true, true, true, true, plane, true));
+  }
+  auto cloud = planarCandidateHeights(geometry, mask, 0.45, 6.1);
+  for (std::size_t i=0; i<cloud.size(); ++i)
+    if (mask[i]) cloud[i] += (i%2 ? 0.09f : -0.09f);
+  const auto plane = gt::estimateConnectedGroundPlane(cloud, mask, geometry, fit);
+  EXPECT_FALSE(plane.valid);
+  EXPECT_EQ(gt::GroundPlaneFitStatus::kExcessiveResidual, plane.status);
+}
+
+TEST(TerrainModel, HardFailureRequiresNominalHeightBeforeReopening) {
+  const auto geometry = coverageGeometry();
+  const auto mask = annularGroundMask(geometry);
+  const gt::GroundPlaneFitParameters configured;
+  const gt::TerrainHealthHysteresisParameters hysteresis;
+  gt::TerrainHealthHysteresisState state;
+  double time=0.0;
+  const auto frame = [&](double height) {
+    const auto plane = gt::estimateConnectedGroundPlane(
+        planarCandidateHeights(geometry, mask, height, 6.1), mask, geometry,
+        gt::groundPlaneFitForHealthGate(configured, state.gate_open, 0.02));
+    time += 0.1;
+    return gt::updateTerrainHealthHysteresis(
+        gt::classifyTerrainFrameHealth(true, true, true, true, true, plane, true),
+        time, hysteresis, &state);
+  };
+  for (int i=0;i<4;++i) EXPECT_FALSE(frame(0.51));
+  EXPECT_TRUE(frame(0.51));
+  for (int i=0;i<20;++i) EXPECT_TRUE(frame(0.4216));
+  EXPECT_FALSE(frame(0.39));
+  for (int i=0;i<10;++i) EXPECT_FALSE(frame(0.4216));
+  for (int i=0;i<4;++i) EXPECT_FALSE(frame(0.51));
+  EXPECT_TRUE(frame(0.51));
+}
+
+TEST(TerrainModel, InvalidHeightHysteresisIsRejected) {
+  const gt::GroundPlaneFitParameters fit;
+  for (double margin : {-0.01, 0.031, std::numeric_limits<double>::quiet_NaN()})
+    EXPECT_THROW(gt::groundPlaneFitForHealthGate(fit, true, margin),
+                 std::invalid_argument);
+  const auto strict = gt::groundPlaneFitForHealthGate(fit, true, 0.0);
+  EXPECT_DOUBLE_EQ(fit.minimum_sensor_height_m, strict.minimum_sensor_height_m);
+}
+
 TEST(TerrainModel, TerrainHealthGateNeedsFiveConsecutiveHealthyFrames) {
   gt::TerrainHealthHysteresisParameters parameters;
   gt::TerrainHealthHysteresisState state;

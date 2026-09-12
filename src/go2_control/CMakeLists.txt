@@ -37,6 +37,7 @@ if(NOT EXISTS "${UNITREE_SDK_ROOT}/include/unitree/robot/go2/sport/sport_client.
 endif()
 
 include_directories(
+  include
   ${catkin_INCLUDE_DIRS}
   ${UNITREE_SDK_ROOT}/include
   ${UNITREE_SDK_ROOT}/thirdparty/include/ddscxx
@@ -75,3 +76,10 @@ install(TARGETS go2_velocity_shaper_node go2_sdk_bridge_mock_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(go2_classic_gait_test test/classic_gait_test.cpp)
+  if(TARGET go2_classic_gait_test)
+    target_link_libraries(go2_classic_gait_test ${catkin_LIBRARIES})
+  endif()
+endif()
