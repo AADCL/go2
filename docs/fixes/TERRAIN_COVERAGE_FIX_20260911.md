@@ -6,7 +6,7 @@
 
 用户反馈：先直行约 4 米，经典步态保持；再发布右转约 90°、距离约 3 米的目标，转了一点后停止，重新点目标和 enable 也未能继续。遥控器转圈确认仍为经典步态。
 
-原始记录位于 `/home/unitree/gait_retest_20260911_kQxq8f/`。机器人 epoch 时间如下：
+原始记录位于 `/home/unitree/go2_archive/tests/gait_retest_20260911_kQxq8f/`。机器人 epoch 时间如下：
 
 | 时间 | 事件 |
 | --- | --- |
@@ -70,7 +70,7 @@ rosparam get /go2_terrain_guard/health/near_support_radius_m
 
 ## 备份与证据位置
 
-`/home/unitree/robot2_terrain_coverage_20260911_4VS9sV/` 包含修改前参数、`before.tar.gz`、新采集 `current.bag` 及前后回放 JSON。
+`/home/unitree/go2_archive/changes/robot2_terrain_coverage_20260911_4VS9sV/` 包含修改前参数、`before.tar.gz`、新采集 `current.bag` 及前后回放 JSON。
 
 备份 SHA256：`cc39889530becda97598b97e50e4a9eeb40bbf97149f1c59662cab3ab709e282`；备份与原文件比较返回 0。备份包含被修改的配置、导航监督节点源文件和旧二进制，以及原回放工具，不包含地图。
 

@@ -47,7 +47,7 @@ Changed runtime: `src/go2_terrain/include/go2_terrain/terrain_model.hpp`,
 Robot evidence directory:
 
 ```text
-/home/unitree/robot2_terrain_replay_20260911_1jhy0H
+/home/unitree/go2_archive/tests/robot2_terrain_replay_20260911_1jhy0H
 ```
 
 It contains `standing.bag`, `stationary.bag`, `params.yaml`, pre-change
@@ -55,7 +55,7 @@ It contains `standing.bag`, `stationary.bag`, `params.yaml`, pre-change
 workspace backup remains:
 
 ```text
-/home/unitree/robot2_before_scout_review_20260911_4CgXkF/workspace.tar.gz
+/home/unitree/go2_archive/backups/robot2_before_scout_review_20260911_4CgXkF/workspace.tar.gz
 ```
 
 `tools/replay_terrain_guard.py` runs only the guard on a dedicated ROS master
@@ -65,7 +65,7 @@ at localhost:11321. It never creates a navigation or SDK process. Example:
 ROS_MASTER_URI=http://localhost:11321 roscore -p 11321
 # In another terminal with ROS Noetic and this workspace sourced:
 ROS_MASTER_URI=http://localhost:11321 python3 tools/replay_terrain_guard.py \
-  /home/unitree/robot2_terrain_replay_20260911_1jhy0H/standing.bag \
+  /home/unitree/go2_archive/tests/robot2_terrain_replay_20260911_1jhy0H/standing.bag \
   /home/unitree/go2_nav_ws /tmp/standing-replay.json
 ```
 

@@ -40,7 +40,7 @@ PGM、YAML 和地形层必须成套使用。新版仅改善离线重建，未修
 
 ## 备份与验证记录
 
-机器人上 `/home/unitree/robot2_terrain_v210_20260910/before.tar.gz`
+机器人上 `/home/unitree/go2_archive/changes/robot2_terrain_v210_20260910/before.tar.gz`
 保存更新前地形包、入口/校验脚本以及今天两张失败地图。
 同目录保存构建、测试和导出日志。恢复时应恢复完整配套源码并重新编译，
 地图也应恢复成套资产，不能只替换 PGM。

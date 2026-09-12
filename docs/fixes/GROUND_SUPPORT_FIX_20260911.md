@@ -15,7 +15,7 @@
 
 日志 `/home/unitree/.ros/log/05e13a30-adc2-11f1-b2ff-6c1ff7c4f07c/rosout.log` 显示：17:24:14 一个目标成功；17:24:37 后续目标被地形检查取消；17:24:49 再次转向时又被取消；后续目标因地形未就绪被拒绝。控制仍使能，未触发转向无响应保护。
 
-停车后录包 `/home/unitree/arrival_stall_20260911_0QLiaS/stalled.bag` 包含 152 对地面/非地面点云。229 次现场诊断采样中 164 次不放行，主要是连通面积和扇区覆盖不足。高度约 0.481–0.564 m，属于当前允许范围。
+停车后录包 `/home/unitree/go2_archive/tests/arrival_stall_20260911_0QLiaS/stalled.bag` 包含 152 对地面/非地面点云。229 次现场诊断采样中 164 次不放行，主要是连通面积和扇区覆盖不足。高度约 0.481–0.564 m，属于当前允许范围。
 
 这是停车后的数据，不能据此断言首次取消前的具体子条件；日志能确认取消来自地形检查，录包能复现该位置持续不就绪。
 
@@ -73,12 +73,12 @@ rosparam get /go2_terrain_guard/health/coplanar_support_enabled
 
 应为 `true`。复测普通转弯、障碍物附近和终点朝向调整。如果再次停车，保留位置与朝向，查看新的 `health_support_*` 诊断；不要仅看旧的单片段面积就判断新检查失败。
 
-备份与证据目录：`/home/unitree/ground_support_fix_20260911_njb1qn/`。其中 `before.tar.gz` 包含本次修改前的配置、头文件、节点源码、测试、校验脚本、回放工具和节点二进制，归档逐文件比较通过。
+备份与证据目录：`/home/unitree/go2_archive/changes/ground_support_fix_20260911_njb1qn/`。其中 `before.tar.gz` 包含本次修改前的配置、头文件、节点源码、测试、校验脚本、回放工具和节点二进制，归档逐文件比较通过。
 
 若需回退，先停稳并退出导航，再执行：
 
 ```bash
-tar -xmzf /home/unitree/ground_support_fix_20260911_njb1qn/before.tar.gz -C /home/unitree/go2_nav_ws
+tar -xmzf /home/unitree/go2_archive/changes/ground_support_fix_20260911_njb1qn/before.tar.gz -C /home/unitree/go2_nav_ws
 ```
 
 随后重新启动导航。地图、SDK、步态策略、TEB 参数及定位代码未在此次优化中修改。

@@ -32,7 +32,7 @@ ROS 主动 shutdown 会先关闭 rosconsole，因此最终退出结果改用标�
 
 已增量部署到第二条狗 `/home/unitree/go2_nav_ws`。修改前为 `227823b`，工作区干净且无导航进程；其地面检查优化完整保留。运行代码仅修改 SDK bridge，地图、雷达地址、规划和地形参数未改。部署过程中未启用底盘，也未启动连接底盘的实机导航。
 
-备份与证据目录：`/home/unitree/shutdown_stop_fix_20260912_PGf5TR/`。
+备份与证据目录：`/home/unitree/go2_archive/changes/shutdown_stop_fix_20260912_PGf5TR/`。
 
 - `before.bundle`：修改前完整 Git 历史，已通过 bundle 校验。
 - `before.tar.gz`：原 bridge 源码、回归脚本及旧 ARM64 bridge 程序，已逐项与原文件比对。SHA256：`66393149a2e3bd32c4299dc27ca8d97bc124de99cd825f903c7fb53e6e7b3c6c`。

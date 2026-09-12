@@ -49,10 +49,10 @@ RVIZ=true run_go2 navigation lab_202609101805 --real
 
 本次修改前已保存源码、控制/定位配置及旧可执行文件：
 
-`/home/unitree/robot2_before_gait_tf_fix_20260911_IQl9vT/before.tar.gz`
+`/home/unitree/go2_archive/changes/robot2_before_gait_tf_fix_20260911_IQl9vT/before.tar.gz`
 
 SHA256：`066cc273340275d7d0c764df8d4f0ae50f2fdaa92f4c1d7af61b77e2c75fcbba`。
 
 备份与源文件比较返回 0。运行中的旧进程不自动重启；需要回退时，先退出导航，再将该归档恢复到 `/home/unitree/go2_nav_ws`，最后按原指令重新启动。归档不包含也不覆盖地图。
 
-原始复现证据：`/home/unitree/gait_capture_20260911_7Rv5eh/navigation.bag` 与 `sdk-events.log`。
+原始复现证据：`/home/unitree/go2_archive/tests/gait_capture_20260911_7Rv5eh/navigation.bag` 与 `sdk-events.log`。

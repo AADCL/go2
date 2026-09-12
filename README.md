@@ -17,7 +17,7 @@
 
 **快速入口：** [完整启动手册](STARTUP_GUIDE.md) · [全部文档](docs/README.md) · [经典步态与停车修复](docs/fixes/GAIT_TF_FIX_20260911.md) · [实时地形检查调整](docs/fixes/TERRAIN_RELAXED_CHECKS_20260911.md) · [第三方版本](THIRD_PARTY.md)
 
-> 当前为 Nano 的 `codex/nano-shutdown-stop-20260912` 修复分支，保留第二条狗已部署的地面检查优化，并加入正常退出停车修复。原已实测快照仍保留在 `nano-tested-20260911`（`70f5cbe`）；本次退出步态仍需现场复测。
+> 当前 Nano 版本保留第二条狗已部署的地面检查优化，并加入正常退出停车修复。原已实测快照仍保留在 `nano-tested-20260911`（`70f5cbe`）；退出停车已通过编译、模拟回归和隔离进程检查，实际步态仍需现场复测。
 
 第二条狗的日常操作从 [启动手册](STARTUP_GUIDE.md) 开始。`docs/deployment/` 和 `docs/releases/` 保留各次部署与发布时的状态，其中机器狗 1 的路径、参数和“尚未部署”说明是历史记录，不代表当前 Nano 配置。各阶段区别见 [文档索引](docs/README.md)。
 
@@ -91,6 +91,8 @@ go2/
 ```
 
 七个自研 ROS 包均位于 `src/`；第三方依赖集中在 `src/third_party/`。源码、地图和工具按原路径保留，部署与修复记录统一从 `docs/README.md` 查找。
+
+第二条狗端侧的历史备份与录包已统一放在 `/home/unitree/go2_archive/`，分类和查找方法见 [归档说明](docs/guides/NANO_ARCHIVE.md)。该目录保存在 Nano 上，不作为日常运行工程，也不重复纳入本 Git 仓库。
 
 ## 环境要求
 

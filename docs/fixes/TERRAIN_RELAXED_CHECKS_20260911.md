@@ -63,7 +63,7 @@ rosparam get /go2_terrain_guard/health/height_outlier_hold_sec
 
 ## 备份、证据与回退
 
-本轮目录：`/home/unitree/terrain_relaxed_checks_20260911_qpsWES/`。
+本轮目录：`/home/unitree/go2_archive/changes/terrain_relaxed_checks_20260911_qpsWES/`。
 
 - `before.tar.gz`：修改前地形配置、源码、头文件、测试、地形节点二进制及回放工具。归档比对通过；SHA256 `a838b4c047e7868a427a112371b478cfca7b00704218cc29cc443310fa92a344`。
 - `validation-before.tar.gz`：修改前工作区校验脚本，归档比对通过。
@@ -74,8 +74,8 @@ rosparam get /go2_terrain_guard/health/height_outlier_hold_sec
 回退时先停稳并退出导航，然后：
 
 ```bash
-tar -xmzf /home/unitree/terrain_relaxed_checks_20260911_qpsWES/before.tar.gz -C /home/unitree/go2_nav_ws
-tar -xmzf /home/unitree/terrain_relaxed_checks_20260911_qpsWES/validation-before.tar.gz -C /home/unitree/go2_nav_ws
+tar -xmzf /home/unitree/go2_archive/changes/terrain_relaxed_checks_20260911_qpsWES/before.tar.gz -C /home/unitree/go2_nav_ws
+tar -xmzf /home/unitree/go2_archive/changes/terrain_relaxed_checks_20260911_qpsWES/validation-before.tar.gz -C /home/unitree/go2_nav_ws
 ```
 
 备份含原节点二进制，可随后重新启动原导航。新增的离线检查工具和本说明可保留，不影响运行。地图和其他历史备份均未改动。
