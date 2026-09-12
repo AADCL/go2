@@ -4,11 +4,17 @@
 No ROS master, DDS channel, or robot connection is created.
 """
 from pathlib import Path
+import argparse
+import os
 import subprocess
 import tempfile
 
 
 root = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--compiler", nargs="+", default=["g++"],
+                    help="C++ compiler command, for example: zig c++")
+args = parser.parse_args()
 source = (root / "src/go2_control/src/sdk_bridge.cpp").read_text()
 
 
@@ -28,6 +34,8 @@ harness = r'''
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <csignal>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,6 +50,14 @@ harness = r'''
 namespace ros {
 struct TimerEvent {};
 double clock = 10.0;
+bool running = true;
+bool ok() { return running; }
+std::function<void()> sleep_hook;
+struct WallDuration {
+  double value;
+  explicit WallDuration(double x): value(x) {}
+  void sleep() const { clock += value; if (sleep_hook) sleep_hook(); }
+};
 struct WallTime {
   double value = 0;
   WallTime() = default;
@@ -53,6 +69,8 @@ struct WallTime {
 };
 using SteadyTime = WallTime;
 }
+volatile std::sig_atomic_t shutdown_signal = 0;
+SHUTDOWN_HELPERS
 namespace std_msgs { struct Bool {
   using ConstPtr = std::shared_ptr<const Bool>;
   bool data;
@@ -236,19 +254,100 @@ int main() {
   c.controlCallback({});
   assert(c.idle_stop_sent_ && !c.stop_retry_pending_);
   assert(c.sport_client_->move_count == moves);
+
+  // Shutdown cannot depend on a live ROS master, ROS timers, or simulated time.
+  ros::running = false;
+  Bridge idle;
+  assert(idle.stopForShutdown());
+  assert(!idle.enabled_ && !idle.have_cmd_ && !idle.commanded_motion_active_);
+  assert(idle.sport_client_->move_count == 0 && idle.sport_client_->stop_count == 0);
+  for (int scenario=0; scenario<7; ++scenario) {
+    Bridge s;
+    ros::clock = 100.0;
+    s.idle_stop_sent_ = false;
+    // Even if an earlier normal-stop episode almost timed out, shutdown needs
+    // a new bounded confirmation window and must not trust pre-exit feedback.
+    s.normal_stop_started_ = ros::SteadyTime(99.01);
+    s.stop_feedback_rx_ = 99.99;
+    if (scenario == 5 || scenario == 6) s.sport_client_->move_result = 3102;
+    if (scenario == 6) s.sport_client_->stop_result = 7;
+    ros::sleep_hook = [&] {
+      if (scenario != 1) s.stop_feedback_rx_ = ros::clock;
+      s.stop_planar_speed_ = scenario == 2 ? 0.2 : 0;
+      s.stop_yaw_speed_ = scenario == 3 ? 0.3 : (scenario == 4 ? NAN : 0);
+    };
+    const bool stopped = s.stopForShutdown();
+    ros::sleep_hook = {};
+    assert(stopped == (scenario != 6));
+    assert(!s.enabled_ && !s.have_cmd_ && !s.commanded_motion_active_);
+    assert(s.commanded_vx_ == 0 && s.commanded_wz_ == 0);
+    assert(s.sport_client_->nonzero_count == 0);
+    if (scenario == 0) {
+      assert(s.sport_client_->stop_count == 0);
+      assert(s.sport_client_->move_count >= 5);
+      assert(ros::clock >= 100.30 && ros::clock < 100.5);
+    } else {
+      assert(s.sport_client_->stop_count == (scenario == 6 ? 3 : 1));
+      assert(ros::clock < 101.1);
+      if (scenario < 5) assert(ros::clock >= 101.0);
+    }
+    if (stopped) {
+      const int zero_sends = s.sport_client_->move_count;
+      const int fault_sends = s.sport_client_->stop_count;
+      assert(s.stopForShutdown());
+      assert(s.sport_client_->move_count == zero_sends);
+      assert(s.sport_client_->stop_count == fault_sends);
+    }
+  }
+  // A failed fault stop from before shutdown must stay on the fault path.
+  for (bool failure : {false, true}) {
+    Bridge pending;
+    pending.idle_stop_sent_ = false;
+    pending.stop_retry_pending_ = true;
+    pending.sport_client_->stop_result = failure ? 7 : 0;
+    assert(pending.stopForShutdown() == !failure);
+    assert(pending.sport_client_->move_count == 0);
+    assert(pending.sport_client_->stop_count == (failure ? 2 : 1));
+  }
+  // A queued motion/localization callback must not issue commands after ROS
+  // shutdown or any supported termination signal, even before destruction.
+  std::vector<int> test_signals{0, SIGINT, SIGTERM};
+#ifdef SIGHUP
+  test_signals.push_back(SIGHUP);
+#endif
+  for (int sig : test_signals) {
+    shutdown_signal = 0;
+    ros::running = sig != 0;
+    if (sig != 0) {
+      std::signal(sig, requestShutdown);
+      std::raise(sig);
+      assert(shutdown_signal == sig);
+    }
+    assert(shutdownRequested());
+    Bridge queued;
+    queued.idle_stop_sent_ = false;
+    queued.last_cmd_.linear.x = 0.3;
+    queued.last_cmd_wall_stamp_ = ros::WallTime::now();
+    queued.controlCallback({});
+    queued.localizationCallback(std::make_shared<const std_msgs::Bool>(std_msgs::Bool{false}));
+    assert(queued.sport_client_->move_count == 0 && queued.sport_client_->stop_count == 0);
+  }
 }
 '''
 methods = "\n".join(method(signature) for signature in (
     "bool prepareDirectMoveControl()", "void holdZeroVelocity(",
     "void failNormalStop(",
     "void controlCallback(",
+    "bool stopForShutdown()",
     "void stopRobot()", "void localizationCallback("))
 with tempfile.TemporaryDirectory(prefix="go2-idle-test-") as directory:
     cpp = Path(directory) / "test.cpp"
-    binary = Path(directory) / "test"
+    binary = Path(directory) / ("test.exe" if os.name == "nt" else "test")
     cpp.write_text(harness.replace("METHODS", methods).replace(
-        "CLASSICCLIENT", method("class DetailedSportClient")))
-    subprocess.run(["g++", "-std=c++14", "-pthread", str(cpp), "-o", str(binary)],
+        "CLASSICCLIENT", method("class DetailedSportClient")).replace(
+        "SHUTDOWN_HELPERS", method("void requestShutdown(") + "\n" +
+        method("bool shutdownRequested()")))
+    subprocess.run(args.compiler + ["-std=c++14", "-pthread", str(cpp), "-o", str(binary)],
                    check=True)
     subprocess.run([str(binary)], check=True)
-print("PASS: passive arming, classic response detail, repeated zero with standstill confirmation, stale/moving/invalid feedback fallback, send failure, stop retry, localization recovery")
+print("PASS: passive arming, classic response detail, normal and shutdown zero/standstill policy, stale/moving/invalid feedback fallback, bounded fault retries, localization recovery, ROS shutdown and available termination signal guards (SIGHUP on Linux)")

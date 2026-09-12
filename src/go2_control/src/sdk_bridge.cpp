@@ -1,4 +1,5 @@
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 
 #include <diagnostic_msgs/DiagnosticArray.h>
 #include <diagnostic_msgs/DiagnosticStatus.h>
@@ -26,6 +27,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <csignal>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -37,6 +39,19 @@ namespace
 {
 constexpr const char* kLowStateTopic = "rt/lowstate";
 constexpr const char* kSportStateTopic = "rt/sportmodestate";
+
+volatile std::sig_atomic_t shutdown_signal = 0;
+
+void requestShutdown(int signal)
+{
+  // Only set a signal-safe flag here; DDS and ROS cleanup run on the main thread.
+  shutdown_signal = signal;
+}
+
+bool shutdownRequested()
+{
+  return shutdown_signal != 0 || !ros::ok();
+}
 
 // The bundled ClassicWalk wrapper discards Response.data. Retain that data
 // using the same registered API and JsonizeDataBool wire payload.
@@ -195,10 +210,13 @@ public:
 
   ~Go2SdkBridgeReal()
   {
-    enabled_.store(false);
-    publishControlEnabled(false);
-    stopRobot();
-    ROS_WARN("GO2 SDK bridge shutdown: StopMove sent.");
+    control_timer_.stop();
+    diagnostics_timer_.stop();
+    stopForShutdown();
+    // DDS feedback must remain alive until stopping finishes, but its callbacks
+    // must be joined before the feedback mutexes and state members are destroyed.
+    if (sport_state_subscriber_) sport_state_subscriber_->CloseChannel();
+    if (low_state_subscriber_) low_state_subscriber_->CloseChannel();
   }
 
 private:
@@ -353,6 +371,7 @@ private:
 
   void localizationCallback(const std_msgs::Bool::ConstPtr& msg)
   {
+    if (shutdownRequested()) return;
     const bool previous = localization_ok_.exchange(msg->data);
     if (previous && !msg->data)
     {
@@ -372,6 +391,7 @@ private:
 
   void commandCallback(const geometry_msgs::Twist::ConstPtr& msg)
   {
+    if (shutdownRequested()) return;
     if (!finiteTwist(*msg))
     {
       ROS_ERROR_THROTTLE(1.0, "Rejected non-finite velocity command.");
@@ -386,6 +406,12 @@ private:
   bool enableCallback(std_srvs::SetBool::Request& request,
                       std_srvs::SetBool::Response& response)
   {
+    if (shutdownRequested())
+    {
+      response.success = false;
+      response.message = "Bridge is shutting down; control cannot be enabled.";
+      return true;
+    }
     commanded_motion_active_.store(false);
     last_nonzero_command_wall_.store(0.0);
     commanded_vx_.store(0.0);
@@ -435,6 +461,12 @@ private:
       return true;
     }
 
+    if (shutdownRequested())
+    {
+      response.success = false;
+      response.message = "Bridge shutdown requested during enable; control remains disabled.";
+      return true;
+    }
     commanded_motion_active_.store(false);
     no_step_response_.store(false);
     joint_motion_ema_.store(0.0);
@@ -450,6 +482,7 @@ private:
 
   void controlCallback(const ros::TimerEvent&)
   {
+    if (shutdownRequested()) return;
     if (!sport_client_) return;
     if (stop_retry_pending_)
     {
@@ -553,6 +586,7 @@ private:
       return;
     }
 
+    if (shutdownRequested()) return;
     idle_stop_sent_ = false;
     normal_stop_started_ = ros::SteadyTime();
     const int32_t move_result = sport_client_->Move(vx, vy, wz);
@@ -906,6 +940,56 @@ private:
     diagnostics_pub_.publish(array);
   }
 
+  bool stopForShutdown()
+  {
+    enabled_.store(false);
+    publishControlEnabled(false);
+    commanded_motion_active_.store(false);
+    commanded_vx_.store(0.0);
+    commanded_wz_.store(0.0);
+    {
+      std::lock_guard<std::mutex> lock(cmd_mutex_);
+      have_cmd_ = false;
+      last_cmd_ = geometry_msgs::Twist();
+    }
+    if (!sport_client_ || (idle_stop_sent_ && !stop_retry_pending_))
+    {
+      // No outstanding bridge motion: do not interfere with handheld control.
+      ROS_INFO("GO2 SDK bridge shutdown: already idle; no new SDK stop request");
+      return true;
+    }
+
+    ROS_WARN("GO2 SDK bridge shutdown: stopping outstanding motion before exit");
+    normal_stop_started_ = ros::SteadyTime();
+    unsigned int fault_retries = 0;
+    while (!idle_stop_sent_ || stop_retry_pending_)
+    {
+      if (stop_retry_pending_)
+      {
+        // Preserve an outstanding fault stop. Two final retries are bounded by
+        // the client's one-second response timeout; never replace it with Move.
+        if (fault_retries++ >= 2) break;
+        stopRobot();
+      }
+      else
+      {
+        // Reuse the normal zero-Move/standstill policy, including its one-second
+        // deadline and StopMove fallback on missing feedback or send failure.
+        holdZeroVelocity();
+      }
+      if (!idle_stop_sent_) ros::WallDuration(0.01).sleep();
+    }
+    // Do not depend on ros::ok(), ROS timers, or simulated time during teardown.
+    if (!idle_stop_sent_ || stop_retry_pending_)
+    {
+      ROS_ERROR("GO2 SDK bridge shutdown: STOP UNCONFIRMED, SDK code %d; use handheld emergency stop",
+                last_move_result_.load());
+      return false;
+    }
+    ROS_INFO("GO2 SDK bridge shutdown: stop sequence complete");
+    return true;
+  }
+
   void stopRobot()
   {
     normal_stop_started_ = ros::SteadyTime();
@@ -1092,9 +1176,13 @@ private:
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "go2_sdk_bridge_real");
+  ros::init(argc, argv, "go2_sdk_bridge_real", ros::init_options::NoSigintHandler);
+  std::signal(SIGINT, requestShutdown);
+  std::signal(SIGTERM, requestShutdown);
+  std::signal(SIGHUP, requestShutdown);
   ROS_WARN("Starting REAL Unitree GO2 SDK bridge.");
   Go2SdkBridgeReal node;
-  ros::spin();
+  while (!shutdownRequested())
+    ros::getGlobalCallbackQueue()->callAvailable(ros::WallDuration(0.01));
   return 0;
 }

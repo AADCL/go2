@@ -356,7 +356,7 @@ rostopic echo -n 1 /go2/diagnostics
 run_go2 disable
 ```
 
-`disable` 会立即发送 `StopMove` 并锁住后续运动命令；不能以关闭终端代替安全停机。
+`disable` 会立即发送 `StopMove` 并锁住后续运动命令，可能影响当前步态；异常时仍优先停车。正常结束导航的操作见第 12 节，单独关闭 RViz 不是停车操作。
 
 `enable` 会主动丢弃启用前缓存的所有速度，但不会调用 `StopMove` 或姿态切换 API；它以 `Move(0,0,0)` 进入并保持已站立控制态。因此正确顺序必须是“reset → enable → 发布新目标”；启用之前产生的速度不会被执行。
 
@@ -409,7 +409,7 @@ map -> odom -> base_link -> lidar_link
 - real SDK bridge 再次检查定位状态和命令超时；启动默认 disabled。
 - real SDK bridge 在每次成功 `enable` 前只读确认实际控制器为本机已注册的 `mcf`，但保持机器人已经站立且经遥控器验证的运动状态，不再调用姿态或 gait 切换 API。现场返回码 `7004` 已证明 `normal`、`sport_mode` 和 `ai` 都不是这台固件接受的选择名，因此默认禁止自动切换控制器。
 - 非零速度持续 3 秒后，bridge 会同时检查 12 个关节的运动速度和四足是否出现卸载。SDK 若返回成功但没有真实迈步响应，bridge 会自动 disabled 并发送 `StopMove`；诊断中 `no_step_response=true`。
-- Bridge 在 enabled 期间，无目标、TEB 零速和命令超时均持续发送 `Move(0,0,0)`，不再反复退出和重入底盘运动状态机。只有显式 disable、定位丢失、no-step watchdog 或节点退出才发送 `StopMove`。SDK 控制频率为 20 Hz，并保留转向换向滞回。
+- 普通零速使用 `Move(0,0,0)`，通过新鲜 DDS 速度反馈确认停稳后停止发送，避免干扰遥控器。正常退出也采用该策略，不再无条件调用 `StopMove`；显式 disable、定位丢失、运动命令超时、无迈步响应及普通停车失败仍保留故障停车。当前 launch 的 SDK 控制频率为 200 Hz，零速停车请求最多约 20 Hz。详见 [退出停车修复](docs/fixes/SHUTDOWN_STOP_FIX_20260912.md)。
 
 ### 9.1 查看 GO2 底盘与电池状态
 
@@ -561,14 +561,15 @@ rostopic echo -n 1 /go2/diagnostics
 
 ## 12. 停机顺序
 
-真机导航：
+以下正常退出流程适用于已编译并加载 [退出停车修复](docs/fixes/SHUTDOWN_STOP_FIX_20260912.md) 的版本。先取消目标并确认机器人停稳：
 
 ```bash
-run_go2 disable
 run_go2 reset-navigation
 ```
 
-确认机器人停止后，在主 launch 终端按 `Ctrl-C`。建图则先 `save-map` 并确认 PCD 文件，再停止主 launch。
+确认机器人停止后，在主 launch 终端按 `Ctrl-C`。新版 bridge 对已完成的停车不再追加 `StopMove`；尚未停稳时先零速停车并检查反馈，失败时仍执行故障停车。单独关闭 RViz 不会取消已接受的目标，也不会关闭导航链。
+
+异常或需要立即锁住控制时仍执行 `run_go2 disable` 或使用遥控器停车；该保护保留 `StopMove`，可能影响步态。建图则先 `save-map` 并确认 PCD 文件，再停止主 launch。
 
 ## 13. 当前验证边界
 

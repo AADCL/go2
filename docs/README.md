@@ -5,7 +5,7 @@
 ## 当前 Nano 版本
 
 - 分支：`unitree-orin-nano`；端侧工作空间：`/home/unitree/go2_nav_ws`。
-- 运行代码基线：`nano-tested-20260911`（`70f5cbe`）。本次只整理文档，不改变源码、参数、地图和启动命令。
+- 已实测快照：`nano-tested-20260911`（`70f5cbe`）。本开发分支 `codex/nano-shutdown-stop-20260912` 新增正常退出停车修复，尚待实机部署及步态复测；地图、地形参数和启动命令未改动。
 - 修改前快照：`nano-before-20260911`。已有标签和 Git 提交历史保留。
 - 更晚的地面支持检查优化位于独立开发分支 `codex/nano-ground-check-20260911`，未随本次文档整理合入。
 - 地图名称是用户自定义参数，例如 `lab_202609101805`；实际使用时替换为对应地图目录名。
@@ -16,6 +16,7 @@
 | --- | --- |
 | [完整启动手册](../STARTUP_GUIDE.md) | 建图、保存、导出、定位、导航和使能 |
 | [步态与 TF 修复](fixes/GAIT_TF_FIX_20260911.md) | 普通停车与经典步态保持的修复记录 |
+| [正常退出停车修复](fixes/SHUTDOWN_STOP_FIX_20260912.md) | 退出时的停车确认、退出信号处理与故障兜底 |
 | [实时地形检查调整](fixes/TERRAIN_RELAXED_CHECKS_20260911.md) | 当前测试配置、短时高度容忍、验证和回退 |
 | [二维地图导出更新](deployment/DEPLOYMENT_ROBOT2_V210.md) | 第二条狗的 V2.1.0 导出部署与验证 |
 | [第三方来源](../THIRD_PARTY.md) | 算法、驱动与 SDK 的来源和版本 |
